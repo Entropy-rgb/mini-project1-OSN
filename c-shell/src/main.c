@@ -30,7 +30,7 @@ int main()
         char cwd[4096];
         getcwd(cwd, sizeof(cwd));
         char rel_working_dir[4096] = "~";
-        if (strncmp(cwd, shell_home, home_len) == 0 && (cwd[home_len] == '\0' || cwd[home_len] == '\\'))
+        if (strncmp(cwd, shell_home, home_len) == 0 && (cwd[home_len] == '\0' || cwd[home_len] == '/'))
         {
             strcat(rel_working_dir, &cwd[home_len]);
         }
@@ -38,9 +38,10 @@ int main()
         {
             strcpy(rel_working_dir, cwd);
         }
-        printf("<%s@%s:%s>", pw->pw_name, hostname, rel_working_dir);
-        char inpstr[50];
-        scanf("%s", inpstr);
+        printf("<%s@%s:%s> ", pw->pw_name, hostname, rel_working_dir);
+        char* line = NULL;
+        size_t len = 0;
+        ssize_t nread = getline(&line, &len, stdin);
     }
     return 0;
 }
