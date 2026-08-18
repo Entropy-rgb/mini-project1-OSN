@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <string.h>
@@ -16,6 +17,10 @@ int main()
     uid_t user_uid = getuid();
     struct passwd *pw = getpwuid(user_uid);
 
+    if(pw == NULL){
+        fprintf(stderr, "shell : could not resolve username\n");
+    }
+
     // get hostname using gethostname()
     char hostname[HOST_NAME_MAX];
     gethostname(hostname, HOST_NAME_MAX);
@@ -24,6 +29,9 @@ int main()
     char shell_home[4096];
     getcwd(shell_home, sizeof(shell_home));
     int home_len = strlen(shell_home);
+
+    char* line = NULL;
+    size_t len = 0;
 
     while (true)
     {
@@ -39,9 +47,12 @@ int main()
             strcpy(rel_working_dir, cwd);
         }
         printf("<%s@%s:%s> ", pw->pw_name, hostname, rel_working_dir);
-        char* line = NULL;
-        size_t len = 0;
         ssize_t nread = getline(&line, &len, stdin);
+        if(nread == -1){
+            break;
+        }
+        line[strcspn(line, "\n")] = '\0';
     }
+    free(line);
     return 0;
 }
