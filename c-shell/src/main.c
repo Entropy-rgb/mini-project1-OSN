@@ -6,6 +6,10 @@
 #include <sys/types.h>
 #include <limits.h>
 
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 256
+#endif
+
 int main()
 {
     // get username using the getpwuid syscall
@@ -13,8 +17,8 @@ int main()
     struct passwd *pw = getpwuid(user_uid);
 
     // get hostname using gethostname()
-    char hostname[_SC_HOST_NAME_MAX];
-    gethostname(hostname, _SC_HOST_NAME_MAX);
+    char hostname[HOST_NAME_MAX];
+    gethostname(hostname, HOST_NAME_MAX);
 
     // get the shell cwd , which is the shell home according to the requirement doc
     char shell_home[4096];
