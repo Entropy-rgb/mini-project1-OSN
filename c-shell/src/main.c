@@ -58,10 +58,16 @@ int main()
         int ok  = 1;
         token* token_head = lexer(line, &ok);
 
-        if(ok == 0){
+        if(ok == 0 || token_head == NULL){
+            if(token_head) free_tokens(token_head);
             continue;
         }
 
+        int grammar_check = parser(token_head);
+        if(grammar_check == 1){
+            fprintf(stderr, "cshell: invalid syntax\n");
+            continue;
+        }
 
     }
     free(line);

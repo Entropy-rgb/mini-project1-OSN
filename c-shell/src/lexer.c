@@ -31,6 +31,14 @@ void append_token(token **head, token **tail, char *content, enum TokenType type
     }
 }
 
+void free_tokens(token* token_head){
+    while(token_head != NULL){
+        token* next = token_head->next_token;
+        free(token_head);
+        token_head = next;
+    }
+}
+
 token *lexer(char *line, int *ok)
 {
     enum lexer_states curr_state = START;
