@@ -6,6 +6,8 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include <limits.h>
+#include "lexer.h"
+#include "parser.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
@@ -52,6 +54,15 @@ int main()
             break;
         }
         line[strcspn(line, "\n")] = '\0';
+        // send the input to lexer, get the lexer's output and send it to parser , and execute given commands
+        int ok  = 1;
+        token* token_head = lexer(line, &ok);
+
+        if(ok == 0){
+            continue;
+        }
+
+
     }
     free(line);
     return 0;
