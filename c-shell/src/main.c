@@ -8,6 +8,7 @@
 #include <limits.h>
 #include "lexer.h"
 #include "parser.h"
+#include "prompt.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
@@ -19,36 +20,29 @@ int main()
     uid_t user_uid = getuid();
     struct passwd *pw = getpwuid(user_uid);
 
+    const char *username = "unknown";
     if(pw == NULL){
         fprintf(stderr, "shell : could not resolve username\n");
+    } else {
+        username = pw->pw_name;
     }
 
     // get hostname using gethostname()
     char hostname[HOST_NAME_MAX];
-    gethostname(hostname, HOST_NAME_MAX);
+    if (gethostname(hostname, HOST_NAME_MAX) != 0) {
+        strcpy(hostname, "unknown");
+    }
 
     // get the shell cwd , which is the shell home according to the requirement doc
     char shell_home[4096];
-    getcwd(shell_home, sizeof(shell_home));
-    int home_len = strlen(shell_home);
+    getcwd(shell_home, sizeof(shell_home));    
 
     char* line = NULL;
     size_t len = 0;
 
     while (true)
     {
-        char cwd[4096];
-        getcwd(cwd, sizeof(cwd));
-        char rel_working_dir[4096] = "~";
-        if (strncmp(cwd, shell_home, home_len) == 0 && (cwd[home_len] == '\0' || cwd[home_len] == '/'))
-        {
-            strcat(rel_working_dir, &cwd[home_len]);
-        }
-        else
-        {
-            strcpy(rel_working_dir, cwd);
-        }
-        printf("<%s@%s:%s> ", pw->pw_name, hostname, rel_working_dir);
+        display_prompt(username, hostname, shell_home);
         ssize_t nread = getline(&line, &len, stdin);
         if(nread == -1){
             break;
@@ -66,9 +60,10 @@ int main()
         int grammar_check = parser(token_head);
         if(grammar_check == 1){
             fprintf(stderr, "cshell: invalid syntax\n");
+            free_tokens(token_head); // Clean up memory before continuing
             continue;
         }
-
+        free_tokens(token_head);
     }
     free(line);
     return 0;
