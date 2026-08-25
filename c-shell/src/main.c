@@ -13,6 +13,7 @@
 #include "reveal.h"
 #include "peek.h"
 #include "locate.h"
+#include "exec_calls.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
@@ -109,6 +110,8 @@ int main()
         else if (strcmp(args[0], "locate") == 0)
         {
             locate(arg_count, args);
+        }else{
+            execute_external(args, arg_count);
         }
         free_tokens(token_head);
         free(args);
