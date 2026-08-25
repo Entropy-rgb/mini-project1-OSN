@@ -1,7 +1,8 @@
 #ifndef TOKEN_H
 #define TOKEN_H
 
-typedef enum TokenType {
+typedef enum TokenType
+{
     OP_PIPE, // |
     OP_AMP,  // &
     OP_SEMI, // ;
@@ -10,12 +11,13 @@ typedef enum TokenType {
     OP_GT,   // >
     OP_GTGT, // >>
     WORD,    // normal word
-} TokenType ;
+} TokenType;
 
-typedef struct token {
-    char* content;
+typedef struct token
+{
+    char *content;
     enum TokenType type;
-    struct token* next_token;
+    struct token *next_token;
 } token;
 
 #endif

@@ -6,7 +6,8 @@
 void display_prompt(const char *username, const char *hostname, const char *shell_home)
 {
     char cwd[4096];
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+    if (getcwd(cwd, sizeof(cwd)) == NULL)
+    {
         perror("shell: getcwd failed");
         return;
     }
@@ -25,7 +26,7 @@ void display_prompt(const char *username, const char *hostname, const char *shel
     }
 
     printf("<%s@%s:%s> ", username, hostname, rel_working_dir);
-    
+
     // Force the prompt to print immediately since there is no newline character
-    fflush(stdout); 
+    fflush(stdout);
 }

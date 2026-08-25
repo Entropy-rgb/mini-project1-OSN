@@ -3,6 +3,6 @@
 
 #include "token.h"
 
-int parser(token* head);
+int parser(token *head);
 
 #endif

@@ -11,6 +11,8 @@
 #include "prompt.h"
 #include "hop.h"
 #include "reveal.h"
+#include "peek.h"
+#include "locate.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
@@ -99,6 +101,14 @@ int main()
         else if (strcmp(args[0], "reveal") == 0)
         {
             execute_reveal(args, arg_count, shell_home, prev_dir);
+        }
+        else if (strcmp(args[0], "peek") == 0)
+        {
+            peek(arg_count, args);
+        }
+        else if (strcmp(args[0], "locate") == 0)
+        {
+            locate(arg_count, args);
         }
         free_tokens(token_head);
         free(args);

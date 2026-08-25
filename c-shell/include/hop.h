@@ -3,12 +3,13 @@
 
 #include "token.h"
 
-typedef struct {
+typedef struct
+{
     char path[4096];
     int frequency;
     long recency; // using time(NULL) for this is the easiest approach
 } FrecencyEntry;
 
-int execute_hop(char **args , int arg_count , char *shell_home , char *prev_dir);
+int execute_hop(char **args, int arg_count, char *shell_home, char *prev_dir);
 
 #endif
