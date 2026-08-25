@@ -15,7 +15,7 @@
 #include "locate.h"
 #include "exec_calls.h"
 #include "redirection.h"
-
+#include "pipe.h"
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
 #endif
@@ -59,6 +59,11 @@ int main()
             break;
         }
         line[strcspn(line, "\n")] = '\0';
+        if (strchr(line, '|') != NULL)
+        {
+            execute_pipeline(line, shell_home, prev_dir);
+            continue;
+        }
         // send the input to lexer, get the lexer's output and send it to parser , and execute given commands
         int ok = 1;
         token *token_head = lexer(line, &ok);
