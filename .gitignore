@@ -1,3 +1,6 @@
 c-shell/src/a
 *.o
 *.out
+*.hop_history
+.gitignore
+*ai_usage*

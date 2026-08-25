@@ -2,56 +2,177 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 #include "hop.h"
 
-int execute_hop(char **args , int arg_count , char *shell_home , char *prev_dir){
+void update_frecency(char *shell_home, const char *new_path)
+{
+    FrecencyEntry *saved_entries = malloc(sizeof(FrecencyEntry) * 1000);
+    if (saved_entries == NULL)
+        return;
 
+    char frecency_file_location[4096];
+    snprintf(frecency_file_location, sizeof(frecency_file_location), "%s/.hop_history", shell_home);
+
+    int count = 0;
+
+    FILE *fptr = fopen(frecency_file_location, "r");
+    if (fptr != NULL)
+    {
+        while (count < 1000 && fscanf(fptr, "%4095s %d %ld", saved_entries[count].path, &saved_entries[count].frequency, &saved_entries[count].recency) == 3)
+        {
+            count++;
+        }
+        fclose(fptr);
+    }
+
+    int found = 0;
+    for (int i = 0; i < count; i++)
+    {
+        if (strcmp(saved_entries[i].path, new_path) == 0)
+        {
+            saved_entries[i].frequency += 1;
+            saved_entries[i].recency = (long)time(NULL);
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found && count < 1000)
+    {
+        strcpy(saved_entries[count].path, new_path);
+        saved_entries[count].frequency = 1;
+        saved_entries[count].recency = (long)time(NULL);
+        count++;
+    }
+
+    fptr = fopen(frecency_file_location, "w");
+    if (fptr != NULL)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            fprintf(fptr, "%s %d %ld\n", saved_entries[i].path, saved_entries[i].frequency, saved_entries[i].recency);
+        }
+        fclose(fptr);
+    }
+
+    free(saved_entries);
+}
+
+char *search_frecency(char *shell_home, const char *target)
+{
+    char frecency_file_location[4096];
+    snprintf(frecency_file_location, sizeof(frecency_file_location), "%s/.hop_history", shell_home);
+
+    FILE *fptr = fopen(frecency_file_location, "r");
+    if (fptr == NULL)
+    {
+        return NULL;
+    }
+
+    char best_match[4096] = "";
+    long long best_score = -1;
+
+    char path[4096];
+    int freq;
+    long rec;
+
+    while (fscanf(fptr, "%4095s %d %ld", path, &freq, &rec) == 3)
+    {
+        if (strstr(path, target) != NULL)
+        {
+            if (access(path, F_OK) == 0)
+            {
+                long long score = ((long long)freq * 10000000000LL) + rec;
+                if (score > best_score)
+                {
+                    best_score = score;
+                    strcpy(best_match, path);
+                }
+            }
+        }
+    }
+    fclose(fptr);
+
+    if (best_score != -1)
+    {
+        char *winner = malloc(strlen(best_match) + 1);
+        strcpy(winner, best_match);
+        return winner;
+    }
+
+    return NULL;
+}
+
+int execute_hop(char **args, int arg_count, char *shell_home, char *prev_dir)
+{
     char owd[4096];
+    char new_cwd[4096];
     int failure = 1;
 
-    if(arg_count == 1){
+    if (arg_count == 1)
+    {
         getcwd(owd, 4096);
-
         failure = chdir(shell_home);
-        if(!failure){
-            strcpy(prev_dir , owd);
-        }else{
+        if (!failure)
+        {
+            strcpy(prev_dir, owd);
+            getcwd(new_cwd, 4096);
+            update_frecency(shell_home, new_cwd);
+        }
+        else
+        {
             fprintf(stderr, "hop: no such directory\n");
         }
-
         return 0;
     }
 
-    if(arg_count > 1){
-        for(int each_arg = 1 ; each_arg < arg_count; each_arg++){
+    if (arg_count > 1)
+    {
+        for (int each_arg = 1; each_arg < arg_count; each_arg++)
+        {
             getcwd(owd, 4096);
-            if(strcmp(args[each_arg], "~") == 0){
+            if (strcmp(args[each_arg], "~") == 0)
+            {
                 failure = chdir(shell_home);
-                if(!failure){
-                    strcpy(prev_dir , owd);
-                }else{
-                    fprintf(stderr, "hop: no such directory\n");
-                }
-            }else if(strcmp(args[each_arg], "-")==0){
-                if(*prev_dir){
+            }
+            else if (strcmp(args[each_arg], "-") == 0)
+            {
+                if (*prev_dir)
+                {
                     failure = chdir(prev_dir);
-                    if(!failure){
-                        strcpy(prev_dir , owd);
-                    }else{
-                        fprintf(stderr, "hop: no such directory\n");
-                    }
-                }else{
+                }
+                else
+                {
                     continue;
                 }
-            }else if(strcmp(args[each_arg], ".")==0){
+            }
+            else if (strcmp(args[each_arg], ".") == 0)
+            {
                 continue;
-            }else{
+            }
+            else
+            {
                 failure = chdir(args[each_arg]);
-                if(!failure){
-                    strcpy(prev_dir , owd);
-                }else{
-                    fprintf(stderr, "hop: no such directory\n");
+                if (failure)
+                {
+                    char *fallback_path = search_frecency(shell_home, args[each_arg]);
+                    if (fallback_path != NULL)
+                    {
+                        failure = chdir(fallback_path);
+                        free(fallback_path);
+                    }
                 }
+            }
+            if (!failure)
+            {
+                strcpy(prev_dir, owd);
+                getcwd(new_cwd, 4096);
+                update_frecency(shell_home, new_cwd);
+            }
+            else
+            {
+                fprintf(stderr, "hop: no such directory\n");
             }
         }
     }
