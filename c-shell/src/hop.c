@@ -7,7 +7,7 @@
 
 void update_frecency(char *shell_home, const char *new_path)
 {
-    FrecencyEntry *saved_entries = malloc(sizeof(FrecencyEntry) * 1000);
+    FrecencyEntry *saved_entries = malloc(sizeof(FrecencyEntry) * 64);
     if (saved_entries == NULL)
         return;
 
@@ -19,7 +19,7 @@ void update_frecency(char *shell_home, const char *new_path)
     FILE *fptr = fopen(frecency_file_location, "r");
     if (fptr != NULL)
     {
-        while (count < 1000 && fscanf(fptr, "%4095s %d %ld", saved_entries[count].path, &saved_entries[count].frequency, &saved_entries[count].recency) == 3)
+        while (count < 64 && fscanf(fptr, "%d %ld %[^\n]", &saved_entries[count].frequency, &saved_entries[count].recency, saved_entries[count].path) == 3)
         {
             count++;
         }
@@ -38,7 +38,7 @@ void update_frecency(char *shell_home, const char *new_path)
         }
     }
 
-    if (!found && count < 1000)
+    if (!found && count < 64)
     {
         strcpy(saved_entries[count].path, new_path);
         saved_entries[count].frequency = 1;
@@ -51,7 +51,7 @@ void update_frecency(char *shell_home, const char *new_path)
     {
         for (int i = 0; i < count; i++)
         {
-            fprintf(fptr, "%s %d %ld\n", saved_entries[i].path, saved_entries[i].frequency, saved_entries[i].recency);
+            fprintf(fptr, "%d %ld %s\n", saved_entries[i].frequency, saved_entries[i].recency, saved_entries[i].path);
         }
         fclose(fptr);
     }
@@ -66,9 +66,7 @@ char *search_frecency(char *shell_home, const char *target)
 
     FILE *fptr = fopen(frecency_file_location, "r");
     if (fptr == NULL)
-    {
         return NULL;
-    }
 
     char best_match[4096] = "";
     long long best_score = -1;
@@ -77,13 +75,13 @@ char *search_frecency(char *shell_home, const char *target)
     int freq;
     long rec;
 
-    while (fscanf(fptr, "%4095s %d %ld", path, &freq, &rec) == 3)
+    while (fscanf(fptr, "%d %ld %[^\n]", &freq, &rec, path) == 3)
     {
         if (strstr(path, target) != NULL)
         {
             if (access(path, F_OK) == 0)
             {
-                long long score = ((long long)freq * 10000000000LL) + rec;
+                long long score = ((long long)freq * 10000000LL) + rec;
                 if (score > best_score)
                 {
                     best_score = score;
