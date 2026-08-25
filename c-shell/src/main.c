@@ -14,6 +14,7 @@
 #include "peek.h"
 #include "locate.h"
 #include "exec_calls.h"
+#include "redirection.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
@@ -87,6 +88,11 @@ int main()
         }
 
         char **args = malloc(sizeof(char *) * (arg_count + 1));
+        if (args == NULL)
+        {
+            free_tokens(token_head);
+            continue;
+        }
         tmp = token_head;
         for (int i = 0; i < arg_count; i++)
         {
@@ -95,24 +101,101 @@ int main()
         }
         args[arg_count] = NULL;
 
-        if (strcmp(args[0], "hop") == 0)
+        int saved_stdin = dup(STDIN_FILENO);
+        int saved_stdout = dup(STDOUT_FILENO);
+        if (saved_stdin < 0 || saved_stdout < 0)
         {
-            execute_hop(args, arg_count, shell_home, prev_dir);
+            perror("dup");
+            if (saved_stdin >= 0)
+                close(saved_stdin);
+            if (saved_stdout >= 0)
+                close(saved_stdout);
+            free_tokens(token_head);
+            free(args);
+            continue;
         }
-        else if (strcmp(args[0], "reveal") == 0)
+        char **clean_args =
+            malloc(sizeof(char *) * (arg_count + 1));
+        if (clean_args == NULL)
         {
-            execute_reveal(args, arg_count, shell_home, prev_dir);
+            close(saved_stdin);
+            close(saved_stdout);
+            free_tokens(token_head);
+            free(args);
+            continue;
         }
-        else if (strcmp(args[0], "peek") == 0)
+        int clean_count = 0;
+        for (int i = 0; i < arg_count; i++)
         {
-            peek(arg_count, args);
+            if (strcmp(args[i], "<") == 0 || strcmp(args[i], ">") == 0 || strcmp(args[i], ">>") == 0)
+            {
+                i++;
+                continue;
+            }
+            clean_args[clean_count++] = args[i];
         }
-        else if (strcmp(args[0], "locate") == 0)
+        clean_args[clean_count] = NULL;
+        int input_status = setup_input_redirection(args, arg_count);
+        if (input_status == -1)
         {
-            locate(arg_count, args);
-        }else{
-            execute_external(args, arg_count);
+            dup2(saved_stdin, STDIN_FILENO);
+            dup2(saved_stdout, STDOUT_FILENO);
+            close(saved_stdin);
+            close(saved_stdout);
+            free(clean_args);
+            free_tokens(token_head);
+            free(args);
+            continue;
         }
+        FILE *output_tmp = NULL;
+        int output_status =
+            setup_output_redirection(args, arg_count, &output_tmp);
+        if (output_status == -1)
+        {
+            dup2(saved_stdin, STDIN_FILENO);
+            dup2(saved_stdout, STDOUT_FILENO);
+            close(saved_stdin);
+            close(saved_stdout);
+            free(clean_args);
+            free_tokens(token_head);
+            free(args);
+            continue;
+        }
+        if (strcmp(clean_args[0], "hop") == 0)
+        {
+            execute_hop(clean_args, clean_count, shell_home, prev_dir);
+        }
+        else if (strcmp(clean_args[0], "reveal") == 0)
+        {
+            execute_reveal(clean_args, clean_count, shell_home, prev_dir);
+        }
+        else if (strcmp(clean_args[0], "peek") == 0)
+        {
+            peek(clean_count, clean_args);
+        }
+        else if (strcmp(clean_args[0], "locate") == 0)
+        {
+            locate(clean_count, clean_args);
+        }
+        else
+        {
+            execute_external(clean_args, clean_count);
+        }
+        if (dup2(saved_stdin, STDIN_FILENO) < 0)
+        {
+            perror("dup2");
+        }   
+        if (dup2(saved_stdout, STDOUT_FILENO) < 0)
+        {
+            perror("dup2");
+        }
+        close(saved_stdin);
+        close(saved_stdout);
+        if (output_status == 1)
+        {
+            distribute_output(args, arg_count, output_tmp);
+        }
+        free(clean_args);
         free_tokens(token_head);
         free(args);
     }
