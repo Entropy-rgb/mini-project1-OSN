@@ -25,6 +25,8 @@ void execute_external(char **args, int arg_count)
         if (access(args[0], X_OK) == 0)
         {
             execv(args[0], args);
+            perror("execv");
+            exit(1);
         }
 
         fprintf(stderr, "cshell: command not found (%s)\n", args[0]);
@@ -36,6 +38,7 @@ void execute_external(char **args, int arg_count)
     if (args[0][0] == '%')
     {
         cmd_name = args[0] + 1;
+        args[0] = cmd_name;
 
         char *path = getenv("PATH");
         if (path != NULL)
@@ -55,6 +58,8 @@ void execute_external(char **args, int arg_count)
                     if (access(found_path, X_OK) == 0)
                     {
                         execv(found_path, args);
+                        perror("execv");
+                        exit(1);
                     }
 
                     dir = strtok(NULL, ":");
@@ -75,6 +80,8 @@ void execute_external(char **args, int arg_count)
     if (access(local_path, X_OK) == 0)
     {
         execv(local_path, args);
+        perror("execv");
+        exit(1);
     }
 
     char *path = getenv("PATH");
@@ -97,6 +104,8 @@ void execute_external(char **args, int arg_count)
                 if (access(found_path, X_OK) == 0)
                 {
                     execv(found_path, args);
+                    perror("execv");
+                    exit(1);
                 }
 
                 dir = strtok(NULL, ":");
