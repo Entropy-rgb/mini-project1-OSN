@@ -99,6 +99,36 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
     return ret;
 }
 
+int segment_has_pipe(token *start, token *end)
+{
+    token *t = start;
+    while (t != end) {
+        if (t->type == OP_PIPE)
+            return 1;
+        t = t->next_token;
+    }
+    return 0;
+}
+
+int build_line_from_segment(token *start, token *end, char *out, int out_size)
+{
+    int pos = 0;
+    token *t = start;
+    while (t != end) {
+        int len = strlen(t->content);
+        if (pos + len + 1 >= out_size)
+            return -1;
+        memcpy(out + pos, t->content, len);
+        pos += len;
+        t = t->next_token;
+        if (t != end) {
+            out[pos++] = ' ';
+        }
+    }
+    out[pos] = '\0';
+    return 0;
+}
+
 int main()
 {
     uid_t user_uid = getuid();
@@ -125,10 +155,6 @@ int main()
             break;
         }
         line[strcspn(line, "\n")] = '\0';
-        if (strchr(line, '|') != NULL) {
-            execute_pipeline(line, shell_home, prev_dir);
-            continue;
-        }
         int ok = 1;
         token *token_head = lexer(line, &ok);
         if (ok == 0 || token_head == NULL) {
@@ -142,26 +168,51 @@ int main()
             free_tokens(token_head);
             continue;
         }
-        token *tmp = token_head;
-        int arg_count = 0;
-        while (tmp != NULL) {
-            arg_count++;
-            tmp = tmp->next_token;
+        token *seg_start = token_head;
+        token *cur = token_head;
+        while (true) {
+            int is_end = (cur == NULL);
+            int is_semi = (!is_end && cur->type == OP_SEMI);
+            if (is_end || is_semi) {
+                token *seg_end = cur;
+                int count = 0;
+                token *tmp = seg_start;
+                while (tmp != seg_end) {
+                    count++;
+                    tmp = tmp->next_token;
+                }
+                if (count > 0) {
+                    if (segment_has_pipe(seg_start, seg_end)) {
+                        char pipe_line[8192];
+                        if (build_line_from_segment(seg_start, seg_end, pipe_line, sizeof(pipe_line)) == 0) {
+                            execute_pipeline(pipe_line, shell_home, prev_dir);
+                        }
+                    } else {
+                        char **args = malloc(sizeof(char *) * (count + 1));
+                        if (args != NULL) {
+                            tmp = seg_start;
+                            for (int i = 0; i < count; i++) {
+                                args[i] = tmp->content;
+                                tmp = tmp->next_token;
+                            }
+                            args[count] = NULL;
+                            int st = execute_single(args, count, shell_home, prev_dir);
+                            free(args);
+                            if (st == 1) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (is_end)
+                    break;
+                seg_start = cur->next_token;
+            }
+            if (cur == NULL)
+                break;
+            cur = cur->next_token;
         }
-        char **args = malloc(sizeof(char *) * (arg_count + 1));
-        if (args == NULL) {
-            free_tokens(token_head);
-            continue;
-        }
-        tmp = token_head;
-        for (int i = 0; i < arg_count; i++) {
-            args[i] = tmp->content;
-            tmp = tmp->next_token;
-        }
-        args[arg_count] = NULL;
-        execute_single(args, arg_count, shell_home, prev_dir);
         free_tokens(token_head);
-        free(args);
     }
     free(line);
     return 0;
