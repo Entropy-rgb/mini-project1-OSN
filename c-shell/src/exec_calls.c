@@ -3,9 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <errno.h>
 
-static int check_access_exists(char **args, int arg_count)
+int check_external_exists(char **args, int arg_count)
 {
+    if (arg_count == 0 || args[0] == NULL)
+        return 0;
     if (strchr(args[0], '/') != NULL) {
         if (access(args[0], X_OK) == 0)
             return 1;
@@ -41,6 +45,10 @@ static int check_access_exists(char **args, int arg_count)
     free(path_copy);
     return found;
 }
+static int check_access_exists(char **args, int arg_count)
+{
+    return check_external_exists(args, arg_count);
+}
 
 int execute_external(char **args, int arg_count)
 {
@@ -53,16 +61,23 @@ int execute_external(char **args, int arg_count)
         fprintf(stderr, "cshell: command not found (%s)\n", name);
         return 1;
     }
+    sigset_t mask, prev;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &mask, &prev);
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
+        sigprocmask(SIG_SETMASK, &prev, NULL);
         return 0;
     }
     if (pid > 0) {
         int status;
         waitpid(pid, &status, 0);
+        sigprocmask(SIG_SETMASK, &prev, NULL);
         return 0;
     }
+    sigprocmask(SIG_SETMASK, &prev, NULL);
     if (strchr(args[0], '/') != NULL) {
         execv(args[0], args);
         perror("execv");
