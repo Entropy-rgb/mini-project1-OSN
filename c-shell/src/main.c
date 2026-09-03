@@ -6,6 +6,10 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include <limits.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
 #include "lexer.h"
 #include "parser.h"
 #include "prompt.h"
@@ -19,7 +23,54 @@
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 256
 #endif
-
+#define MAX_JOBS 1024
+struct bg_job {
+    int id;
+    pid_t pid;
+    char cmd[256];
+    int alive;
+};
+static struct bg_job jobs[MAX_JOBS];
+static int job_count = 0;
+static int next_job_id = 1;
+static volatile sig_atomic_t fg_active = 0;
+static void sigchld_handler(int sig)
+{
+    int saved_errno = errno;
+    pid_t p;
+    int status;
+    while ((p = waitpid(-1, &status, WNOHANG)) > 0) {
+        int idx = -1;
+        for (int i = 0; i < job_count; i++) {
+            if (jobs[i].alive && jobs[i].pid == p) { idx = i; break; }
+        }
+        if (idx == -1) {
+            continue;
+        }
+        jobs[idx].alive = 0;
+        char buf[512];
+        int len = 0;
+        if (WIFEXITED(status)) {
+            len = snprintf(buf, sizeof(buf), "%s with pid %d exited normally\n", jobs[idx].cmd, (int)p);
+        } else if (WIFSIGNALED(status)) {
+            len = snprintf(buf, sizeof(buf), "%s with pid %d exited abnormally\n", jobs[idx].cmd, (int)p);
+        } else {
+            continue;
+        }
+        if (len > 0) {
+            write(STDOUT_FILENO, buf, len);
+        }
+    }
+    errno = saved_errno;
+}
+static int is_builtin(char *cmd)
+{
+    if (strcmp(cmd, "hop")==0) return 1;
+    if (strcmp(cmd, "reveal")==0) return 1;
+    if (strcmp(cmd, "peek")==0) return 1;
+    if (strcmp(cmd, "locate")==0) return 1;
+    return 0;
+}
 int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
 {
     int saved_stdin = dup(STDIN_FILENO);
@@ -73,6 +124,7 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
         return 0;
     }
     int ret = 0;
+    fg_active = 1;
     if (strcmp(clean_args[0], "hop") == 0) {
         execute_hop(clean_args, clean_count, shell_home, prev_dir);
     } else if (strcmp(clean_args[0], "reveal") == 0) {
@@ -84,6 +136,7 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
     } else {
         ret = execute_external(clean_args, clean_count);
     }
+    fg_active = 0;
     if (dup2(saved_stdin, STDIN_FILENO) < 0) {
         perror("dup2");
     }
@@ -98,7 +151,105 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
     free(clean_args);
     return ret;
 }
-
+int launch_background_single(char **args, int arg_count, char *shell_home, char *prev_dir)
+{
+    char **clean_args = malloc(sizeof(char *) * (arg_count + 1));
+    if (clean_args == NULL) return 0;
+    int clean_count = 0;
+    int has_input = 0;
+    for (int i = 0; i < arg_count; i++) {
+        if (strcmp(args[i], "<") == 0) has_input = 1;
+        if (strcmp(args[i], "<") == 0 || strcmp(args[i], ">") == 0 || strcmp(args[i], ">>") == 0) {
+            i++;
+            continue;
+        }
+        clean_args[clean_count++] = args[i];
+    }
+    clean_args[clean_count] = NULL;
+    if (clean_count == 0) { free(clean_args); return 0; }
+    if (is_builtin(clean_args[0])) {
+        free(clean_args);
+        return 0;
+    }
+    if (!check_external_exists(clean_args, clean_count)) {
+        char *name = clean_args[0];
+        if (name[0] == '%') name = name + 1;
+        fprintf(stderr, "cshell: command not found (%s)\n", name);
+        free(clean_args);
+        return 1;
+    }
+    sigset_t mask, prev;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &mask, &prev);
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        sigprocmask(SIG_SETMASK, &prev, NULL);
+        free(clean_args);
+        return 0;
+    }
+    if (pid == 0) {
+        sigprocmask(SIG_SETMASK, &prev, NULL);
+        signal(SIGCHLD, SIG_DFL);
+        if (!has_input) {
+            int fd = open("/dev/null", O_RDONLY);
+            if (fd >= 0) { dup2(fd, STDIN_FILENO); close(fd); }
+        }
+        int input_status = setup_input_redirection(args, arg_count);
+        if (input_status == -1) _exit(1);
+        FILE *output_tmp = NULL;
+        int output_status = setup_output_redirection(args, arg_count, &output_tmp);
+        if (output_status == -1) _exit(1);
+        char *cmd = clean_args[0];
+        if (strchr(cmd, '/') != NULL) {
+            execv(cmd, clean_args);
+            _exit(1);
+        }
+        char *lookup = cmd;
+        if (cmd[0] == '%') { lookup = cmd + 1; clean_args[0] = lookup; cmd = lookup; }
+        char local_path[4096];
+        snprintf(local_path, sizeof(local_path), "./%s", cmd);
+        if (access(local_path, X_OK) == 0) {
+            execv(local_path, clean_args);
+            _exit(1);
+        }
+        char *path = getenv("PATH");
+        if (path != NULL) {
+            char *pc = strdup(path);
+            if (pc != NULL) {
+                char *dir = strtok(pc, ":");
+                while (dir != NULL) {
+                    char fp[4096];
+                    snprintf(fp, sizeof(fp), "%s/%s", dir, cmd);
+                    if (access(fp, X_OK) == 0) {
+                        execv(fp, clean_args);
+                        _exit(1);
+                    }
+                    dir = strtok(NULL, ":");
+                }
+                free(pc);
+            }
+        }
+        _exit(1);
+    }
+    if (job_count < MAX_JOBS) {
+        jobs[job_count].id = next_job_id++;
+        jobs[job_count].pid = pid;
+        strncpy(jobs[job_count].cmd, clean_args[0], sizeof(jobs[job_count].cmd)-1);
+        jobs[job_count].cmd[sizeof(jobs[job_count].cmd)-1] = '\0';
+        if (jobs[job_count].cmd[0] == '%') {
+            memmove(jobs[job_count].cmd, jobs[job_count].cmd+1, strlen(jobs[job_count].cmd));
+        }
+        jobs[job_count].alive = 1;
+        job_count++;
+        printf("[%d] %d\n", jobs[job_count-1].id, (int)pid);
+        fflush(stdout);
+    }
+    sigprocmask(SIG_SETMASK, &prev, NULL);
+    free(clean_args);
+    return 0;
+}
 int segment_has_pipe(token *start, token *end)
 {
     token *t = start;
@@ -109,7 +260,6 @@ int segment_has_pipe(token *start, token *end)
     }
     return 0;
 }
-
 int build_line_from_segment(token *start, token *end, char *out, int out_size)
 {
     int pos = 0;
@@ -128,9 +278,13 @@ int build_line_from_segment(token *start, token *end, char *out, int out_size)
     out[pos] = '\0';
     return 0;
 }
-
 int main()
 {
+    struct sigaction sa;
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0; // Don't use SA_RESTART so getline can be interrupted
+    sigaction(SIGCHLD, &sa, NULL);
     uid_t user_uid = getuid();
     struct passwd *pw = getpwuid(user_uid);
     const char *username = "unknown";
@@ -150,8 +304,13 @@ int main()
     char prev_dir[4096] = "";
     while (true) {
         display_prompt(username, hostname, shell_home);
+        fflush(stdout);
         ssize_t nread = getline(&line, &len, stdin);
         if (nread == -1) {
+            if (errno == EINTR) {
+                clearerr(stdin);
+                continue;
+            }
             break;
         }
         line[strcspn(line, "\n")] = '\0';
@@ -170,10 +329,16 @@ int main()
         }
         token *seg_start = token_head;
         token *cur = token_head;
+        int should_break_outer = 0;
         while (true) {
             int is_end = (cur == NULL);
-            int is_semi = (!is_end && cur->type == OP_SEMI);
-            if (is_end || is_semi) {
+            int is_delim = 0;
+            int is_bg = 0;
+            if (!is_end && (cur->type == OP_SEMI || cur->type == OP_AMP)) {
+                is_delim = 1;
+                if (cur->type == OP_AMP) is_bg = 1;
+            }
+            if (is_end || is_delim) {
                 token *seg_end = cur;
                 int count = 0;
                 token *tmp = seg_start;
@@ -185,7 +350,41 @@ int main()
                     if (segment_has_pipe(seg_start, seg_end)) {
                         char pipe_line[8192];
                         if (build_line_from_segment(seg_start, seg_end, pipe_line, sizeof(pipe_line)) == 0) {
-                            execute_pipeline(pipe_line, shell_home, prev_dir);
+                            if (is_bg) {
+                                sigset_t mask, prev;
+                                sigemptyset(&mask);
+                                sigaddset(&mask, SIGCHLD);
+                                sigprocmask(SIG_BLOCK, &mask, &prev);
+                                pid_t first = execute_pipeline_bg(pipe_line, shell_home, prev_dir);
+                                if (first > 0) {
+                                    char first_cmd[256] = "";
+                                    token *tt = seg_start;
+                                    while (tt != seg_end) {
+                                        if (tt->type == WORD) { strncpy(first_cmd, tt->content, sizeof(first_cmd)-1); break; }
+                                        tt = tt->next_token;
+                                    }
+                                    if (first_cmd[0]=='%') memmove(first_cmd, first_cmd+1, strlen(first_cmd));
+                                    if (job_count < MAX_JOBS) {
+                                        jobs[job_count].id = next_job_id++;
+                                        jobs[job_count].pid = first;
+                                        strncpy(jobs[job_count].cmd, first_cmd, sizeof(jobs[job_count].cmd)-1);
+                                        jobs[job_count].alive = 1;
+                                        job_count++;
+                                        printf("[%d] %d\n", jobs[job_count-1].id, (int)first);
+                                        fflush(stdout);
+                                    }
+                                }
+                                sigprocmask(SIG_SETMASK, &prev, NULL);
+                            } else {
+                                fg_active = 1;
+                                sigset_t mask, prev;
+                                sigemptyset(&mask);
+                                sigaddset(&mask, SIGCHLD);
+                                sigprocmask(SIG_BLOCK, &mask, &prev);
+                                execute_pipeline(pipe_line, shell_home, prev_dir);
+                                sigprocmask(SIG_SETMASK, &prev, NULL);
+                                fg_active = 0;
+                            }
                         }
                     } else {
                         char **args = malloc(sizeof(char *) * (count + 1));
@@ -196,17 +395,25 @@ int main()
                                 tmp = tmp->next_token;
                             }
                             args[count] = NULL;
-                            int st = execute_single(args, count, shell_home, prev_dir);
-                            free(args);
-                            if (st == 1) {
-                                break;
+                            int st = 0;
+                            if (is_bg) {
+                                st = launch_background_single(args, count, shell_home, prev_dir);
+                            } else {
+                                st = execute_single(args, count, shell_home, prev_dir);
+                                if (st == 1) {
+                                    free(args);
+                                    should_break_outer = 1;
+                                }
                             }
+                            free(args);
+                            if (should_break_outer) break;
                         }
                     }
                 }
                 if (is_end)
                     break;
                 seg_start = cur->next_token;
+                if (should_break_outer) break;
             }
             if (cur == NULL)
                 break;
