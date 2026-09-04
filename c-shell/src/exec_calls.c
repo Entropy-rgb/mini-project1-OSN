@@ -66,17 +66,25 @@ int execute_external(char **args, int arg_count)
     sigaddset(&mask, SIGCHLD);
     sigprocmask(SIG_BLOCK, &mask, &prev);
     pid_t pid = fork();
+    if (pid > 0) {
+        setpgid(pid, pid);
+    }
     if (pid < 0) {
         perror("fork");
         sigprocmask(SIG_SETMASK, &prev, NULL);
         return 0;
     }
     if (pid > 0) {
+        // give terminal control to the child process group
+        tcsetpgrp(STDIN_FILENO, pid);
         int status;
-        waitpid(pid, &status, 0);
+        waitpid(pid, &status, WUNTRACED);
+        // reclaim terminal control
+        tcsetpgrp(STDIN_FILENO, getpgrp());
         sigprocmask(SIG_SETMASK, &prev, NULL);
         return 0;
     }
+    setpgid(0, 0);
     sigprocmask(SIG_SETMASK, &prev, NULL);
     if (strchr(args[0], '/') != NULL) {
         execv(args[0], args);

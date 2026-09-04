@@ -14,7 +14,6 @@
 #include "exec_calls.h"
 #include "redirection.h"
 #include "pipe.h"
-#define MAX_PIPE_COMMANDS 256
 static void execute_command(char **args,
                              int arg_count,
                              char *shell_home,
@@ -93,6 +92,10 @@ static void execute_command(char **args,
     else if (strcmp(clean_args[0], "locate") == 0)
     {
         locate(clean_count, clean_args);
+    }    else if (strcmp(clean_args[0], "activities") == 0)
+    {
+        extern void print_activities(void);
+        print_activities();
     }
     else
     {
@@ -203,6 +206,10 @@ void execute_command_bg(char **args,
     else if (strcmp(clean_args[0], "locate") == 0)
     {
         locate(clean_count, clean_args);
+    }    else if (strcmp(clean_args[0], "activities") == 0)
+    {
+        extern void print_activities(void);
+        print_activities();
     }
     else
     {
@@ -308,6 +315,9 @@ void execute_pipeline(char *raw_line,
     for (int i = 0; i < command_count; i++)
     {
         pids[i] = fork();
+        if (pids[i] > 0) {
+            setpgid(pids[i], i == 0 ? pids[i] : pids[0]);
+        }
         if (pids[i] < 0)
         {
             perror("fork");
@@ -325,6 +335,7 @@ void execute_pipeline(char *raw_line,
         if (pids[i] == 0)
         {
             sigprocmask(SIG_SETMASK, &prev, NULL);
+            setpgid(0, i == 0 ? 0 : pids[0]);
             if (i > 0)
             {
                 if (dup2(pipes[i - 1][0], STDIN_FILENO) < 0)
@@ -390,16 +401,19 @@ void execute_pipeline(char *raw_line,
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
+    tcsetpgrp(STDIN_FILENO, pids[0]);
     for (int i = 0; i < command_count; i++)
     {
-        waitpid(pids[i], NULL, 0);
+        int status;
+        waitpid(pids[i], &status, WUNTRACED);
     }
+    tcsetpgrp(STDIN_FILENO, getpgrp());
     sigprocmask(SIG_SETMASK, &prev, NULL);
     free(line_copy);
 }
-pid_t execute_pipeline_bg(char *raw_line,
+int execute_pipeline_bg(char *raw_line,
                       char *shell_home,
-                      char *prev_dir)
+                      char *prev_dir, pid_t *out_pids, char out_cmds[][256])
 {
     char *line_copy = strdup(raw_line);
     if (line_copy == NULL)
@@ -415,7 +429,22 @@ pid_t execute_pipeline_bg(char *raw_line,
             free(line_copy);
             return -1;
         }
-        commands[command_count++] = command;
+        commands[command_count] = command;
+        if (out_cmds != NULL) {
+            // strip leading spaces for cmd name
+            char *tmp = command;
+            while(*tmp == ' ' || *tmp == '	') tmp++;
+            // get the first word
+            char cmd_name[256] = {0};
+            int k=0;
+            while(tmp[k] && tmp[k] != ' ' && tmp[k] != '	' && k < 255) {
+                cmd_name[k] = tmp[k];
+                k++;
+            }
+            cmd_name[k] = '\0';
+            strncpy(out_cmds[command_count], cmd_name, 255);
+        }
+        command_count++;
         command = strtok(NULL, "|");
     }
     if (command_count < 2)
@@ -443,6 +472,9 @@ pid_t execute_pipeline_bg(char *raw_line,
     for (int i = 0; i < command_count; i++)
     {
         pids[i] = fork();
+        if (pids[i] > 0) {
+            setpgid(pids[i], i == 0 ? pids[i] : pids[0]);
+        }
         if (pids[i] < 0)
         {
             perror("fork");
@@ -458,21 +490,11 @@ pid_t execute_pipeline_bg(char *raw_line,
         }
         if (pids[i] == 0)
         {
+            setpgid(0, i == 0 ? 0 : pids[0]);
             if (i > 0)
             {
                 if (dup2(pipes[i - 1][0], STDIN_FILENO) < 0)
                     _exit(1);
-            } else {
-                int fd = open("/dev/null", O_RDONLY);
-                if (fd >= 0) {
-                    int has_in = 0;
-                    char *tmp = commands[i];
-                    if (strchr(tmp, '<') != NULL) has_in = 1;
-                    if (!has_in) {
-                        dup2(fd, STDIN_FILENO);
-                    }
-                    close(fd);
-                }
             }
             if (i < command_count - 1)
             {
@@ -534,7 +556,9 @@ pid_t execute_pipeline_bg(char *raw_line,
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
-    pid_t first = pids[0];
+    for (int i=0; i<command_count; i++) {
+        out_pids[i] = pids[i];
+    }
     free(line_copy);
-    return first;
+    return command_count;
 }
