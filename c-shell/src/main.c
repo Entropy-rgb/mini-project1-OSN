@@ -24,11 +24,17 @@
 #define HOST_NAME_MAX 256
 #endif
 #define MAX_JOBS 1024
-struct bg_job {
-    int id;
+#define MAX_JOB_PROCS 256
+struct job_proc {
     pid_t pid;
     char cmd[256];
-    int alive;
+    int alive; // 0=exited, 1=running, 2=stopped
+};
+struct bg_job {
+    int id;
+    pid_t pgid;
+    int proc_count;
+    struct job_proc procs[MAX_JOB_PROCS];
 };
 static struct bg_job jobs[MAX_JOBS];
 static int job_count = 0;
@@ -39,26 +45,37 @@ static void sigchld_handler(int sig)
     int saved_errno = errno;
     pid_t p;
     int status;
-    while ((p = waitpid(-1, &status, WNOHANG)) > 0) {
-        int idx = -1;
+    while ((p = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        int job_idx = -1;
+        int proc_idx = -1;
         for (int i = 0; i < job_count; i++) {
-            if (jobs[i].alive && jobs[i].pid == p) { idx = i; break; }
+            for (int j = 0; j < jobs[i].proc_count; j++) {
+                if (jobs[i].procs[j].pid == p) {
+                    job_idx = i;
+                    proc_idx = j;
+                    break;
+                }
+            }
+            if (job_idx != -1) break;
         }
-        if (idx == -1) {
-            continue;
-        }
-        jobs[idx].alive = 0;
-        char buf[512];
-        int len = 0;
-        if (WIFEXITED(status)) {
-            len = snprintf(buf, sizeof(buf), "%s with pid %d exited normally\n", jobs[idx].cmd, (int)p);
-        } else if (WIFSIGNALED(status)) {
-            len = snprintf(buf, sizeof(buf), "%s with pid %d exited abnormally\n", jobs[idx].cmd, (int)p);
-        } else {
-            continue;
-        }
-        if (len > 0) {
-            write(STDOUT_FILENO, buf, len);
+        if (job_idx == -1) continue;
+
+        if (WIFEXITED(status) || WIFSIGNALED(status)) {
+            jobs[job_idx].procs[proc_idx].alive = 0;
+            char buf[512];
+            int len = 0;
+            if (WIFEXITED(status)) {
+                len = snprintf(buf, sizeof(buf), "%s with pid %d exited normally\n", jobs[job_idx].procs[proc_idx].cmd, (int)p);
+            } else if (WIFSIGNALED(status)) {
+                len = snprintf(buf, sizeof(buf), "%s with pid %d exited abnormally\n", jobs[job_idx].procs[proc_idx].cmd, (int)p);
+            }
+            if (len > 0) {
+                write(STDOUT_FILENO, buf, len);
+            }
+        } else if (WIFSTOPPED(status)) {
+            jobs[job_idx].procs[proc_idx].alive = 2;
+        } else if (WIFCONTINUED(status)) {
+            jobs[job_idx].procs[proc_idx].alive = 1;
         }
     }
     errno = saved_errno;
@@ -69,7 +86,28 @@ static int is_builtin(char *cmd)
     if (strcmp(cmd, "reveal")==0) return 1;
     if (strcmp(cmd, "peek")==0) return 1;
     if (strcmp(cmd, "locate")==0) return 1;
+    if (strcmp(cmd, "activities")==0) return 1;
     return 0;
+}
+void print_activities(void) {
+    for (int i = 0; i < job_count; i++) {
+        int all_exited = 1;
+        for (int j = 0; j < jobs[i].proc_count; j++) {
+            if (jobs[i].procs[j].alive) {
+                all_exited = 0;
+                break;
+            }
+        }
+        if (!all_exited) {
+            printf("[%d] pgid %d\n", jobs[i].id, (int)jobs[i].pgid);
+            for (int j = 0; j < jobs[i].proc_count; j++) {
+                if (jobs[i].procs[j].alive) {
+                    const char *state = (jobs[i].procs[j].alive == 2) ? "Stopped" : "Running";
+                    printf("  %d %s %s\n", (int)jobs[i].procs[j].pid, jobs[i].procs[j].cmd, state);
+                }
+            }
+        }
+    }
 }
 int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
 {
@@ -133,6 +171,8 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
         peek(clean_count, clean_args);
     } else if (strcmp(clean_args[0], "locate") == 0) {
         locate(clean_count, clean_args);
+    } else if (strcmp(clean_args[0], "activities") == 0) {
+        print_activities();
     } else {
         ret = execute_external(clean_args, clean_count);
     }
@@ -156,9 +196,7 @@ int launch_background_single(char **args, int arg_count, char *shell_home, char 
     char **clean_args = malloc(sizeof(char *) * (arg_count + 1));
     if (clean_args == NULL) return 0;
     int clean_count = 0;
-    int has_input = 0;
     for (int i = 0; i < arg_count; i++) {
-        if (strcmp(args[i], "<") == 0) has_input = 1;
         if (strcmp(args[i], "<") == 0 || strcmp(args[i], ">") == 0 || strcmp(args[i], ">>") == 0) {
             i++;
             continue;
@@ -183,6 +221,9 @@ int launch_background_single(char **args, int arg_count, char *shell_home, char 
     sigaddset(&mask, SIGCHLD);
     sigprocmask(SIG_BLOCK, &mask, &prev);
     pid_t pid = fork();
+    if (pid > 0) {
+        setpgid(pid, pid);
+    }
     if (pid < 0) {
         perror("fork");
         sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -190,12 +231,10 @@ int launch_background_single(char **args, int arg_count, char *shell_home, char 
         return 0;
     }
     if (pid == 0) {
+        setpgid(0, 0);
         sigprocmask(SIG_SETMASK, &prev, NULL);
         signal(SIGCHLD, SIG_DFL);
-        if (!has_input) {
-            int fd = open("/dev/null", O_RDONLY);
-            if (fd >= 0) { dup2(fd, STDIN_FILENO); close(fd); }
-        }
+
         int input_status = setup_input_redirection(args, arg_count);
         if (input_status == -1) _exit(1);
         FILE *output_tmp = NULL;
@@ -235,13 +274,15 @@ int launch_background_single(char **args, int arg_count, char *shell_home, char 
     }
     if (job_count < MAX_JOBS) {
         jobs[job_count].id = next_job_id++;
-        jobs[job_count].pid = pid;
-        strncpy(jobs[job_count].cmd, clean_args[0], sizeof(jobs[job_count].cmd)-1);
-        jobs[job_count].cmd[sizeof(jobs[job_count].cmd)-1] = '\0';
-        if (jobs[job_count].cmd[0] == '%') {
-            memmove(jobs[job_count].cmd, jobs[job_count].cmd+1, strlen(jobs[job_count].cmd));
+        jobs[job_count].pgid = pid;
+        jobs[job_count].proc_count = 1;
+        jobs[job_count].procs[0].pid = pid;
+        strncpy(jobs[job_count].procs[0].cmd, clean_args[0], sizeof(jobs[job_count].procs[0].cmd)-1);
+        jobs[job_count].procs[0].cmd[sizeof(jobs[job_count].procs[0].cmd)-1] = '\0';
+        if (jobs[job_count].procs[0].cmd[0] == '%') {
+            memmove(jobs[job_count].procs[0].cmd, jobs[job_count].procs[0].cmd+1, strlen(jobs[job_count].procs[0].cmd));
         }
-        jobs[job_count].alive = 1;
+        jobs[job_count].procs[0].alive = 1;
         job_count++;
         printf("[%d] %d\n", jobs[job_count-1].id, (int)pid);
         fflush(stdout);
@@ -355,22 +396,25 @@ int main()
                                 sigemptyset(&mask);
                                 sigaddset(&mask, SIGCHLD);
                                 sigprocmask(SIG_BLOCK, &mask, &prev);
-                                pid_t first = execute_pipeline_bg(pipe_line, shell_home, prev_dir);
-                                if (first > 0) {
-                                    char first_cmd[256] = "";
-                                    token *tt = seg_start;
-                                    while (tt != seg_end) {
-                                        if (tt->type == WORD) { strncpy(first_cmd, tt->content, sizeof(first_cmd)-1); break; }
-                                        tt = tt->next_token;
-                                    }
-                                    if (first_cmd[0]=='%') memmove(first_cmd, first_cmd+1, strlen(first_cmd));
+                                pid_t out_pids[MAX_PIPE_COMMANDS];
+                                char out_cmds[MAX_PIPE_COMMANDS][256];
+                                int num_cmds = execute_pipeline_bg(pipe_line, shell_home, prev_dir, out_pids, out_cmds);
+                                if (num_cmds > 0) {
                                     if (job_count < MAX_JOBS) {
                                         jobs[job_count].id = next_job_id++;
-                                        jobs[job_count].pid = first;
-                                        strncpy(jobs[job_count].cmd, first_cmd, sizeof(jobs[job_count].cmd)-1);
-                                        jobs[job_count].alive = 1;
+                                        jobs[job_count].pgid = out_pids[0];
+                                        jobs[job_count].proc_count = num_cmds;
+                                        for (int i = 0; i < num_cmds; i++) {
+                                            jobs[job_count].procs[i].pid = out_pids[i];
+                                            strncpy(jobs[job_count].procs[i].cmd, out_cmds[i], 255);
+                                            jobs[job_count].procs[i].cmd[255] = '\0';
+                                            if (jobs[job_count].procs[i].cmd[0] == '%') {
+                                                memmove(jobs[job_count].procs[i].cmd, jobs[job_count].procs[i].cmd+1, strlen(jobs[job_count].procs[i].cmd));
+                                            }
+                                            jobs[job_count].procs[i].alive = 1;
+                                        }
                                         job_count++;
-                                        printf("[%d] %d\n", jobs[job_count-1].id, (int)first);
+                                        printf("[%d] %d\n", jobs[job_count-1].id, (int)out_pids[0]);
                                         fflush(stdout);
                                     }
                                 }
