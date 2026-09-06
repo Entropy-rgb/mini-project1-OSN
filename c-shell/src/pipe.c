@@ -99,7 +99,7 @@ static void execute_command(char **args,
     }
     else
     {
-        execute_external(clean_args, clean_count);
+        execute_external(clean_args, clean_count, NULL, NULL);
     }
     if (dup2(saved_stdout, STDOUT_FILENO) < 0)
     {
@@ -265,13 +265,13 @@ void execute_command_bg(char **args,
     free(clean_args);
     _exit(0);
 }
-void execute_pipeline(char *raw_line,
+int execute_pipeline(char *raw_line,
                       char *shell_home,
-                      char *prev_dir)
+                      char *prev_dir, pid_t *out_pids, char out_cmds[][256], int *stopped)
 {
     char *line_copy = strdup(raw_line);
     if (line_copy == NULL)
-        return;
+        return 0;
     char *commands[MAX_PIPE_COMMANDS];
     int command_count = 0;
     char *command = strtok(line_copy, "|");
@@ -281,16 +281,29 @@ void execute_pipeline(char *raw_line,
         {
             fprintf(stderr, "cshell: invalid syntax\n");
             free(line_copy);
-            return;
+            return 0;
         }
-        commands[command_count++] = command;
+        commands[command_count] = command;
+        if (out_cmds != NULL) {
+            char *tmp = command;
+            while(*tmp == ' ' || *tmp == '\t') tmp++;
+            char cmd_name[256] = {0};
+            int k=0;
+            while(tmp[k] && tmp[k] != ' ' && tmp[k] != '\t' && k < 255) {
+                cmd_name[k] = tmp[k];
+                k++;
+            }
+            cmd_name[k] = '\0';
+            strncpy(out_cmds[command_count], cmd_name, 255);
+        }
+        command_count++;
         command = strtok(NULL, "|");
     }
     if (command_count < 2)
     {
         fprintf(stderr, "cshell: invalid syntax\n");
         free(line_copy);
-        return;
+        return 0;
     }
     int pipes[MAX_PIPE_COMMANDS - 1][2];
     for (int i = 0; i < command_count - 1; i++)
@@ -304,7 +317,7 @@ void execute_pipeline(char *raw_line,
                 close(pipes[j][1]);
             }
             free(line_copy);
-            return;
+            return 0;
         }
     }
     pid_t pids[MAX_PIPE_COMMANDS];
@@ -330,7 +343,7 @@ void execute_pipeline(char *raw_line,
                 waitpid(pids[j], NULL, 0);
             sigprocmask(SIG_SETMASK, &prev, NULL);
             free(line_copy);
-            return;
+            return 0;
         }
         if (pids[i] == 0)
         {
@@ -402,14 +415,19 @@ void execute_pipeline(char *raw_line,
         close(pipes[i][1]);
     }
     tcsetpgrp(STDIN_FILENO, pids[0]);
+    int is_stopped = 0;
     for (int i = 0; i < command_count; i++)
     {
         int status;
         waitpid(pids[i], &status, WUNTRACED);
+        if (WIFSTOPPED(status)) is_stopped = 1;
+        if (out_pids) out_pids[i] = pids[i];
     }
     tcsetpgrp(STDIN_FILENO, getpgrp());
     sigprocmask(SIG_SETMASK, &prev, NULL);
+    if (stopped) *stopped = is_stopped;
     free(line_copy);
+    return command_count;
 }
 int execute_pipeline_bg(char *raw_line,
                       char *shell_home,

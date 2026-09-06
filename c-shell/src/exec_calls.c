@@ -50,7 +50,7 @@ static int check_access_exists(char **args, int arg_count)
     return check_external_exists(args, arg_count);
 }
 
-int execute_external(char **args, int arg_count)
+int execute_external(char **args, int arg_count, pid_t *out_pid, int *stopped)
 {
     if (arg_count == 0 || args[0] == NULL)
         return 0;
@@ -82,6 +82,10 @@ int execute_external(char **args, int arg_count)
         // reclaim terminal control
         tcsetpgrp(STDIN_FILENO, getpgrp());
         sigprocmask(SIG_SETMASK, &prev, NULL);
+        if (WIFSTOPPED(status)) {
+            if (stopped) *stopped = 1;
+        }
+        if (out_pid) *out_pid = pid;
         return 0;
     }
     setpgid(0, 0);

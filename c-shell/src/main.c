@@ -89,6 +89,22 @@ static int is_builtin(char *cmd)
     if (strcmp(cmd, "activities")==0) return 1;
     return 0;
 }
+void add_stopped_job(pid_t pgid, int proc_count, pid_t *pids, char cmds[][256], const char *raw_cmd) {
+    if (job_count < MAX_JOBS) {
+        jobs[job_count].id = next_job_id++;
+        jobs[job_count].pgid = pgid;
+        jobs[job_count].proc_count = proc_count;
+        for (int i = 0; i < proc_count; i++) {
+            jobs[job_count].procs[i].pid = pids[i];
+            strncpy(jobs[job_count].procs[i].cmd, cmds[i], 255);
+            jobs[job_count].procs[i].cmd[255] = '\0';
+            jobs[job_count].procs[i].alive = 2; // stopped
+        }
+        job_count++;
+        printf("[%d] + Stopped    %s\n", jobs[job_count-1].id, raw_cmd);
+        fflush(stdout);
+    }
+}
 void print_activities(void) {
     for (int i = 0; i < job_count; i++) {
         int all_exited = 1;
@@ -109,7 +125,7 @@ void print_activities(void) {
         }
     }
 }
-int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
+int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir, pid_t *out_pid, int *stopped)
 {
     int saved_stdin = dup(STDIN_FILENO);
     int saved_stdout = dup(STDOUT_FILENO);
@@ -174,7 +190,7 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir)
     } else if (strcmp(clean_args[0], "activities") == 0) {
         print_activities();
     } else {
-        ret = execute_external(clean_args, clean_count);
+        ret = execute_external(clean_args, clean_count, out_pid, stopped);
     }
     fg_active = 0;
     if (dup2(saved_stdin, STDIN_FILENO) < 0) {
@@ -319,6 +335,11 @@ int build_line_from_segment(token *start, token *end, char *out, int out_size)
     out[pos] = '\0';
     return 0;
 }
+void dummy_handler(int sig) {
+    if (sig == SIGINT || sig == SIGTSTP) {
+        write(STDOUT_FILENO, "\n", 1);
+    }
+}
 int main()
 {
     struct sigaction sa;
@@ -326,6 +347,14 @@ int main()
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0; // Don't use SA_RESTART so getline can be interrupted
     sigaction(SIGCHLD, &sa, NULL);
+
+    struct sigaction sa_int;
+    sa_int.sa_handler = dummy_handler;
+    sigemptyset(&sa_int.sa_mask);
+    sa_int.sa_flags = 0;
+    sigaction(SIGINT, &sa_int, NULL);
+    sigaction(SIGTSTP, &sa_int, NULL);
+    signal(SIGTTOU, SIG_IGN);
     uid_t user_uid = getuid();
     struct passwd *pw = getpwuid(user_uid);
     const char *username = "unknown";
@@ -343,6 +372,7 @@ int main()
     char *line = NULL;
     size_t len = 0;
     char prev_dir[4096] = "";
+    int ctrl_d_count = 0;
     while (true) {
         display_prompt(username, hostname, shell_home);
         fflush(stdout);
@@ -352,7 +382,37 @@ int main()
                 clearerr(stdin);
                 continue;
             }
+            int has_stopped = 0;
+            for (int i = 0; i < job_count; i++) {
+                for (int j = 0; j < jobs[i].proc_count; j++) {
+                    if (jobs[i].procs[j].alive == 2) has_stopped = 1;
+                }
+            }
+            if (has_stopped && ctrl_d_count == 0) {
+                printf("\ncshell: there are stopped jobs\n");
+                fflush(stdout);
+                clearerr(stdin);
+                ctrl_d_count++;
+                continue;
+            }
+            for (int i = 0; i < job_count; i++) {
+                int group_alive = 0;
+                for (int j = 0; j < jobs[i].proc_count; j++) {
+                    if (jobs[i].procs[j].alive) group_alive = 1;
+                }
+                if (group_alive) {
+                    kill(-jobs[i].pgid, SIGHUP);
+                    kill(-jobs[i].pgid, SIGCONT); // Make sure they process the SIGHUP if stopped
+                }
+            }
             break;
+        } else {
+            if (nread > 1) { // Not just an empty newline
+                ctrl_d_count = 0;
+            } else if (nread == 1 && line[0] == '\n') {
+                // If just enter is pressed, maybe reset count? "If Ctrl-D is pressed again immediately afterward (no other input in between)". So yes, entering empty line is input!
+                ctrl_d_count = 0;
+            }
         }
         line[strcspn(line, "\n")] = '\0';
         int ok = 1;
@@ -425,9 +485,15 @@ int main()
                                 sigemptyset(&mask);
                                 sigaddset(&mask, SIGCHLD);
                                 sigprocmask(SIG_BLOCK, &mask, &prev);
-                                execute_pipeline(pipe_line, shell_home, prev_dir);
+                                pid_t out_pids[MAX_PIPE_COMMANDS];
+                                char out_cmds[MAX_PIPE_COMMANDS][256];
+                                int stopped = 0;
+                                int num_cmds = execute_pipeline(pipe_line, shell_home, prev_dir, out_pids, out_cmds, &stopped);
                                 sigprocmask(SIG_SETMASK, &prev, NULL);
                                 fg_active = 0;
+                                if (stopped && num_cmds > 0) {
+                                    add_stopped_job(out_pids[0], num_cmds, out_pids, out_cmds, pipe_line);
+                                }
                             }
                         }
                     } else {
@@ -443,7 +509,21 @@ int main()
                             if (is_bg) {
                                 st = launch_background_single(args, count, shell_home, prev_dir);
                             } else {
-                                st = execute_single(args, count, shell_home, prev_dir);
+                                pid_t single_pid = 0;
+                                int stopped = 0;
+                                st = execute_single(args, count, shell_home, prev_dir, &single_pid, &stopped);
+                                if (stopped && single_pid > 0) {
+                                    pid_t pids[1] = {single_pid};
+                                    char cmds[1][256];
+                                    strncpy(cmds[0], args[0], 255);
+                                    cmds[0][255] = '\0';
+                                    char raw_cmd[256] = {0};
+                                    for(int k=0; k<count; k++) {
+                                        strncat(raw_cmd, args[k], 255 - strlen(raw_cmd));
+                                        if (k < count - 1) strncat(raw_cmd, " ", 255 - strlen(raw_cmd));
+                                    }
+                                    add_stopped_job(single_pid, 1, pids, cmds, raw_cmd);
+                                }
                                 if (st == 1) {
                                     free(args);
                                     should_break_outer = 1;
