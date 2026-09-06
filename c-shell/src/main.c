@@ -7,6 +7,10 @@
 #include <sys/types.h>
 #include <limits.h>
 #include <signal.h>
+volatile sig_atomic_t timeout_occurred = 0;
+void sigalrm_handler(int sig) {
+    timeout_occurred = 1;
+}
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -35,6 +39,7 @@ struct bg_job {
     pid_t pgid;
     int proc_count;
     struct job_proc procs[MAX_JOB_PROCS];
+    char raw_cmd[256];
 };
 static struct bg_job jobs[MAX_JOBS];
 static int job_count = 0;
@@ -87,6 +92,7 @@ static int is_builtin(char *cmd)
     if (strcmp(cmd, "peek")==0) return 1;
     if (strcmp(cmd, "locate")==0) return 1;
     if (strcmp(cmd, "activities")==0) return 1;
+    if (strcmp(cmd, "resume")==0) return 1;
     return 0;
 }
 void add_stopped_job(pid_t pgid, int proc_count, pid_t *pids, char cmds[][256], const char *raw_cmd) {
@@ -94,6 +100,8 @@ void add_stopped_job(pid_t pgid, int proc_count, pid_t *pids, char cmds[][256], 
         jobs[job_count].id = next_job_id++;
         jobs[job_count].pgid = pgid;
         jobs[job_count].proc_count = proc_count;
+        strncpy(jobs[job_count].raw_cmd, raw_cmd, 255);
+        jobs[job_count].raw_cmd[255] = '\0';
         for (int i = 0; i < proc_count; i++) {
             jobs[job_count].procs[i].pid = pids[i];
             strncpy(jobs[job_count].procs[i].cmd, cmds[i], 255);
@@ -124,6 +132,117 @@ void print_activities(void) {
             }
         }
     }
+}
+
+int execute_resume(char **args, int arg_count) {
+    if (arg_count < 3 || args[1][0] != '%') {
+        printf("resume: invalid syntax\n");
+        return 0;
+    }
+    int target_id = atoi(args[1] + 1);
+    int is_fg = -1;
+    if (strcmp(args[2], "fg") == 0) is_fg = 1;
+    else if (strcmp(args[2], "bg") == 0) is_fg = 0;
+    
+    if (is_fg == -1) {
+        printf("resume: invalid syntax\n");
+        return 0;
+    }
+    
+    int timeout_sec = 0;
+    if (arg_count > 3) {
+        if (arg_count == 5 && strcmp(args[3], "--timeout") == 0 && is_fg == 1) {
+            timeout_sec = atoi(args[4]);
+            if (timeout_sec <= 0) {
+                printf("resume: invalid syntax\n");
+                return 0;
+            }
+        } else {
+            printf("resume: invalid syntax\n");
+            return 0;
+        }
+    }
+    
+    int job_idx = -1;
+    for (int i = 0; i < job_count; i++) {
+        // check if job is active (any process alive)
+        int alive = 0;
+        for (int j = 0; j < jobs[i].proc_count; j++) {
+            if (jobs[i].procs[j].alive) alive = 1;
+        }
+        if (alive && jobs[i].id == target_id) {
+            job_idx = i;
+            break;
+        }
+    }
+    if (job_idx == -1) {
+        printf("resume: no such job\n");
+        return 0;
+    }
+    
+    // Construct command string for display
+    char cmd_str[8192] = "";
+    strncpy(cmd_str, jobs[job_idx].raw_cmd, 8191);
+    
+    kill(-jobs[job_idx].pgid, SIGCONT);
+    
+    if (is_fg == 0) { // bg
+        for (int j = 0; j < jobs[job_idx].proc_count; j++) {
+            if (jobs[job_idx].procs[j].alive == 2) jobs[job_idx].procs[j].alive = 1; // Mark Running
+        }
+        printf("[%d] + Running    %s\n", jobs[job_idx].id, cmd_str);
+    } else { // fg
+        printf("%s\n", cmd_str);
+        
+        tcsetpgrp(STDIN_FILENO, jobs[job_idx].pgid);
+        
+        if (timeout_sec > 0) {
+            timeout_occurred = 0;
+            alarm(timeout_sec);
+        }
+        
+        int job_stopped = 0;
+        for (int i = 0; i < jobs[job_idx].proc_count; i++) {
+            if (jobs[job_idx].procs[i].alive) {
+                jobs[job_idx].procs[i].alive = 1; // Mark Running while waiting
+                int status;
+                while (1) {
+                    pid_t w = waitpid(jobs[job_idx].procs[i].pid, &status, WUNTRACED);
+                    if (w == -1) {
+                        if (errno == EINTR) {
+                            if (timeout_sec > 0 && timeout_occurred) {
+                                kill(-jobs[job_idx].pgid, SIGTERM);
+                                printf("resume: job timed out\n");
+                                timeout_occurred = 0;
+                                // Wait, the process gets SIGTERM, so subsequent waitpid will reap it.
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                    if (WIFSTOPPED(status)) {
+                        jobs[job_idx].procs[i].alive = 2; // stopped
+                        job_stopped = 1;
+                        break;
+                    } else if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                        jobs[job_idx].procs[i].alive = 0; // dead
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (timeout_sec > 0) {
+            alarm(0);
+        }
+        
+        tcsetpgrp(STDIN_FILENO, getpgrp());
+        
+        if (job_stopped) {
+            printf("[%d] + Stopped    %s\n", jobs[job_idx].id, cmd_str);
+        }
+    }
+    return 0;
 }
 int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir, pid_t *out_pid, int *stopped)
 {
@@ -189,6 +308,8 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir,
         locate(clean_count, clean_args);
     } else if (strcmp(clean_args[0], "activities") == 0) {
         print_activities();
+    } else if (strcmp(clean_args[0], "resume") == 0) {
+        execute_resume(clean_args, clean_count);
     } else {
         ret = execute_external(clean_args, clean_count, out_pid, stopped);
     }
@@ -298,6 +419,13 @@ int launch_background_single(char **args, int arg_count, char *shell_home, char 
         if (jobs[job_count].procs[0].cmd[0] == '%') {
             memmove(jobs[job_count].procs[0].cmd, jobs[job_count].procs[0].cmd+1, strlen(jobs[job_count].procs[0].cmd));
         }
+        char full_cmd[256] = {0};
+        for(int k=0; k<arg_count; k++) {
+            strncat(full_cmd, args[k], 255 - strlen(full_cmd));
+            if (k < arg_count - 1) strncat(full_cmd, " ", 255 - strlen(full_cmd));
+        }
+        strncpy(jobs[job_count].raw_cmd, full_cmd, 255);
+        jobs[job_count].raw_cmd[255] = '\0';
         jobs[job_count].procs[0].alive = 1;
         job_count++;
         printf("[%d] %d\n", jobs[job_count-1].id, (int)pid);
@@ -335,6 +463,7 @@ int build_line_from_segment(token *start, token *end, char *out, int out_size)
     out[pos] = '\0';
     return 0;
 }
+
 void dummy_handler(int sig) {
     if (sig == SIGINT || sig == SIGTSTP) {
         write(STDOUT_FILENO, "\n", 1);
@@ -355,6 +484,12 @@ int main()
     sigaction(SIGINT, &sa_int, NULL);
     sigaction(SIGTSTP, &sa_int, NULL);
     signal(SIGTTOU, SIG_IGN);
+    struct sigaction sa_alrm;
+    sa_alrm.sa_handler = sigalrm_handler;
+    sigemptyset(&sa_alrm.sa_mask);
+    sa_alrm.sa_flags = 0; // MUST be 0 to interrupt waitpid
+    sigaction(SIGALRM, &sa_alrm, NULL);
+
     uid_t user_uid = getuid();
     struct passwd *pw = getpwuid(user_uid);
     const char *username = "unknown";
@@ -473,6 +608,8 @@ int main()
                                             }
                                             jobs[job_count].procs[i].alive = 1;
                                         }
+                                        strncpy(jobs[job_count].raw_cmd, pipe_line, 255);
+                                        jobs[job_count].raw_cmd[255] = '\0';
                                         job_count++;
                                         printf("[%d] %d\n", jobs[job_count-1].id, (int)out_pids[0]);
                                         fflush(stdout);

@@ -97,6 +97,14 @@ static void execute_command(char **args,
         extern void print_activities(void);
         print_activities();
     }
+    else if (strcmp(clean_args[0], "resume") == 0)
+    {
+        // Ignore in pipe or call execute_resume (not expected in pipe)
+    }
+    else if (strcmp(clean_args[0], "resume") == 0)
+    {
+        // Ignore in pipe or call execute_resume (not expected in pipe)
+    }
     else
     {
         execute_external(clean_args, clean_count, NULL, NULL);
@@ -210,6 +218,14 @@ void execute_command_bg(char **args,
     {
         extern void print_activities(void);
         print_activities();
+    }
+    else if (strcmp(clean_args[0], "resume") == 0)
+    {
+        // Ignore in pipe or call execute_resume (not expected in pipe)
+    }
+    else if (strcmp(clean_args[0], "resume") == 0)
+    {
+        // Ignore in pipe or call execute_resume (not expected in pipe)
     }
     else
     {
