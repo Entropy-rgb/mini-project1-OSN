@@ -101,9 +101,17 @@ static void execute_command(char **args,
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
     }
+    else if (strcmp(clean_args[0], "ping") == 0)
+    {
+        // Ignore in pipe
+    }
     else if (strcmp(clean_args[0], "resume") == 0)
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
+    }
+    else if (strcmp(clean_args[0], "ping") == 0)
+    {
+        // Ignore in pipe
     }
     else
     {
@@ -223,9 +231,17 @@ void execute_command_bg(char **args,
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
     }
+    else if (strcmp(clean_args[0], "ping") == 0)
+    {
+        // Ignore in pipe
+    }
     else if (strcmp(clean_args[0], "resume") == 0)
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
+    }
+    else if (strcmp(clean_args[0], "ping") == 0)
+    {
+        // Ignore in pipe
     }
     else
     {

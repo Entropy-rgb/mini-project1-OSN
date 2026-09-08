@@ -93,6 +93,7 @@ static int is_builtin(char *cmd)
     if (strcmp(cmd, "locate")==0) return 1;
     if (strcmp(cmd, "activities")==0) return 1;
     if (strcmp(cmd, "resume")==0) return 1;
+    if (strcmp(cmd, "ping")==0) return 1;
     return 0;
 }
 void add_stopped_job(pid_t pgid, int proc_count, pid_t *pids, char cmds[][256], const char *raw_cmd) {
@@ -134,6 +135,82 @@ void print_activities(void) {
     }
 }
 
+
+int execute_ping(char **args, int arg_count) {
+    if (arg_count != 3) {
+        printf("ping: invalid syntax\n");
+        return 0;
+    }
+    
+    char *sig_str = args[2];
+    int len = strlen(sig_str);
+    if (len == 0) {
+        printf("ping: invalid syntax\n");
+        return 0;
+    }
+    for (int i = 0; i < len; i++) {
+        if (sig_str[i] < '0' || sig_str[i] > '9') {
+            printf("ping: invalid syntax\n");
+            return 0;
+        }
+    }
+    int sig_val = atoi(sig_str);
+    int real_sig = sig_val % 64;
+    
+    char *target_str = args[1];
+    int is_job = 0;
+    int target_val = 0;
+    if (target_str[0] == '%') {
+        is_job = 1;
+        target_val = atoi(target_str + 1);
+    } else {
+        for (int i = 0; target_str[i] != '\0'; i++) {
+            if (target_str[i] < '0' || target_str[i] > '9') {
+                printf("ping: no such process found\n");
+                return 0;
+            }
+        }
+        target_val = atoi(target_str);
+    }
+    
+    int found = 0;
+    pid_t target_pid = -1;
+    
+    if (is_job) {
+        for (int i = 0; i < job_count; i++) {
+            int active = 0;
+            for (int j = 0; j < jobs[i].proc_count; j++) {
+                if (jobs[i].procs[j].alive) active = 1;
+            }
+            if (active && jobs[i].id == target_val) {
+                found = 1;
+                target_pid = -jobs[i].pgid;
+                break;
+            }
+        }
+    } else {
+        for (int i = 0; i < job_count; i++) {
+            for (int j = 0; j < jobs[i].proc_count; j++) {
+                if (jobs[i].procs[j].alive && jobs[i].procs[j].pid == target_val) {
+                    found = 1;
+                    target_pid = target_val;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+    }
+    
+    if (!found) {
+        printf("ping: no such process found\n");
+        return 0;
+    }
+    
+    kill(target_pid, real_sig);
+    printf("Sent signal %d to %s\n", sig_val, target_str);
+    
+    return 0;
+}
 int execute_resume(char **args, int arg_count) {
     if (arg_count < 3 || args[1][0] != '%') {
         printf("resume: invalid syntax\n");
@@ -310,6 +387,8 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir,
         print_activities();
     } else if (strcmp(clean_args[0], "resume") == 0) {
         execute_resume(clean_args, clean_count);
+    } else if (strcmp(clean_args[0], "ping") == 0) {
+        execute_ping(clean_args, clean_count);
     } else {
         ret = execute_external(clean_args, clean_count, out_pid, stopped);
     }
