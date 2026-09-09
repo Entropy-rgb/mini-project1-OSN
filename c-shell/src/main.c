@@ -22,6 +22,7 @@ void sigalrm_handler(int sig) {
 #include "peek.h"
 #include "locate.h"
 #include "exec_calls.h"
+#include "spy.h"
 #include "redirection.h"
 #include "pipe.h"
 #ifndef HOST_NAME_MAX
@@ -94,6 +95,7 @@ static int is_builtin(char *cmd)
     if (strcmp(cmd, "activities")==0) return 1;
     if (strcmp(cmd, "resume")==0) return 1;
     if (strcmp(cmd, "ping")==0) return 1;
+    if (strcmp(cmd, "spy")==0) return 1;
     return 0;
 }
 void add_stopped_job(pid_t pgid, int proc_count, pid_t *pids, char cmds[][256], const char *raw_cmd) {
@@ -389,6 +391,8 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir,
         execute_resume(clean_args, clean_count);
     } else if (strcmp(clean_args[0], "ping") == 0) {
         execute_ping(clean_args, clean_count);
+    } else if (strcmp(clean_args[0], "spy") == 0) {
+        execute_spy(clean_args, clean_count);
     } else {
         ret = execute_external(clean_args, clean_count, out_pid, stopped);
     }

@@ -11,6 +11,7 @@
 #include "reveal.h"
 #include "peek.h"
 #include "locate.h"
+#include "spy.h"
 #include "exec_calls.h"
 #include "redirection.h"
 #include "pipe.h"
@@ -105,6 +106,10 @@ static void execute_command(char **args,
     {
         // Ignore in pipe
     }
+    else if (strcmp(clean_args[0], "spy") == 0)
+    {
+        execute_spy(clean_args, clean_count);
+    }
     else if (strcmp(clean_args[0], "resume") == 0)
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
@@ -112,6 +117,10 @@ static void execute_command(char **args,
     else if (strcmp(clean_args[0], "ping") == 0)
     {
         // Ignore in pipe
+    }
+    else if (strcmp(clean_args[0], "spy") == 0)
+    {
+        execute_spy(clean_args, clean_count);
     }
     else
     {
@@ -235,6 +244,10 @@ void execute_command_bg(char **args,
     {
         // Ignore in pipe
     }
+    else if (strcmp(clean_args[0], "spy") == 0)
+    {
+        execute_spy(clean_args, clean_count);
+    }
     else if (strcmp(clean_args[0], "resume") == 0)
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
@@ -242,6 +255,10 @@ void execute_command_bg(char **args,
     else if (strcmp(clean_args[0], "ping") == 0)
     {
         // Ignore in pipe
+    }
+    else if (strcmp(clean_args[0], "spy") == 0)
+    {
+        execute_spy(clean_args, clean_count);
     }
     else
     {
