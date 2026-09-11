@@ -12,6 +12,7 @@
 #include "peek.h"
 #include "locate.h"
 #include "spy.h"
+#include "snoop.h"
 #include "exec_calls.h"
 #include "redirection.h"
 #include "pipe.h"
@@ -110,6 +111,10 @@ static void execute_command(char **args,
     {
         execute_spy(clean_args, clean_count);
     }
+    else if (strcmp(clean_args[0], "snoop") == 0)
+    {
+        execute_snoop(clean_args, clean_count, shell_home, prev_dir);
+    }
     else if (strcmp(clean_args[0], "resume") == 0)
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
@@ -121,6 +126,10 @@ static void execute_command(char **args,
     else if (strcmp(clean_args[0], "spy") == 0)
     {
         execute_spy(clean_args, clean_count);
+    }
+    else if (strcmp(clean_args[0], "snoop") == 0)
+    {
+        execute_snoop(clean_args, clean_count, shell_home, prev_dir);
     }
     else
     {
@@ -248,6 +257,10 @@ void execute_command_bg(char **args,
     {
         execute_spy(clean_args, clean_count);
     }
+    else if (strcmp(clean_args[0], "snoop") == 0)
+    {
+        execute_snoop(clean_args, clean_count, shell_home, prev_dir);
+    }
     else if (strcmp(clean_args[0], "resume") == 0)
     {
         // Ignore in pipe or call execute_resume (not expected in pipe)
@@ -259,6 +272,10 @@ void execute_command_bg(char **args,
     else if (strcmp(clean_args[0], "spy") == 0)
     {
         execute_spy(clean_args, clean_count);
+    }
+    else if (strcmp(clean_args[0], "snoop") == 0)
+    {
+        execute_snoop(clean_args, clean_count, shell_home, prev_dir);
     }
     else
     {
