@@ -82,8 +82,15 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2)
+  if (which_dev == 2) {
+#ifdef MLFQ
     yield();
+#elif defined(FIFO)
+    // No yield on timer interrupt for FIFO
+#else
+    yield();
+#endif
+  }
 
   prepare_return();
 
@@ -154,8 +161,15 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
+  if (which_dev == 2 && myproc() != 0) {
+#ifdef MLFQ
     yield();
+#elif defined(FIFO)
+    // No yield on timer interrupt for FIFO
+#else
+    yield();
+#endif
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
@@ -170,7 +184,15 @@ clockintr()
     acquire(&tickslock);
     ticks++;
     wakeup(&ticks);
+    extern void update_time(void);
+    update_time();
     release(&tickslock);
+#ifdef MLFQ
+    if (ticks % 48 == 0) {
+        extern void boost_priority(void);
+        boost_priority();
+    }
+#endif
   }
 
   // ask for the next timer interrupt. this also clears
