@@ -183,9 +183,9 @@ clockintr()
   if (cpuid() == 0) {
     acquire(&tickslock);
     ticks++;
-    wakeup(&ticks);
     extern void update_time(void);
     update_time();
+    wakeup(&ticks);
     release(&tickslock);
 #ifdef MLFQ
     if (ticks % 48 == 0) {

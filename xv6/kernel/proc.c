@@ -452,6 +452,14 @@ kexit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
+  
+  p->etime = ticks;
+  if (p->pid > 2) {
+    int turnaround = p->etime - p->creation_time;
+    int waiting = turnaround - p->rtime - p->iotime;
+    int response = p->first_run_time - p->creation_time;
+    printk("Metrics [PID %d]: Turnaround=%d, Waiting=%d, Response=%d\n", p->pid, turnaround, waiting, response);
+  }
 
   release(&wait_lock);
 
