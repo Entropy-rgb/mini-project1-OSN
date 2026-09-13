@@ -4,3 +4,5 @@ c-shell/src/a
 *.hop_history
 .gitignore
 *ai_usage*
+*test_shell.py
+*_suite_sandbox/

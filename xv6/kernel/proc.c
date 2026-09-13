@@ -10,6 +10,10 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+#ifdef MLFQ
+int boost_ticks = 0;
+#endif
+
 struct proc *initproc;
 
 int nextpid = 1;
@@ -125,6 +129,10 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+#ifdef MLFQ
+  p->queue = 0;
+  p->ticks = 0;
+#endif
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     freeproc(p);
