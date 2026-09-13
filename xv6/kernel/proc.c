@@ -669,7 +669,7 @@ yield(void)
       }
       p->state = RUNNABLE;
       enqueue(p->queue, p);
-      if (p->pid > 2) printf("MLFQ_PLOT %d %d %d\n", ticks, p->pid, p->queue);
+      
       sched();
   }
 #else
@@ -888,6 +888,11 @@ void update_time(void) {
     acquire(&p->lock);
     if(p->state == RUNNING) p->rtime++;
     else if(p->state == SLEEPING) p->iotime++;
+#ifdef MLFQ
+    if (p->pid > 2 && p->state != UNUSED && p->state != ZOMBIE) {
+      printk("MLFQ_PLOT %d %d %d\n", ticks, p->pid, p->queue);
+    }
+#endif
     release(&p->lock);
   }
 }
