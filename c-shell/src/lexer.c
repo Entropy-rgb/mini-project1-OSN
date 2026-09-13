@@ -176,25 +176,40 @@ token *lexer(char *line, int *ok)
         {
             if (currently_reading == '\0')
             {
-                fprintf(stderr, "Error: Unmatched double quote.\n");
                 *ok = 0;
                 break;
             }
             else if (currently_reading == '"')
             {
                 curr_state = IN_WORD;
+                curr_char++;
+            }
+            else if (currently_reading == '\\')
+            {
+                char next_char = line[curr_char + 1];
+                if (next_char == '"' || next_char == '\\') {
+                    buffer[buf_idx++] = next_char;
+                    curr_char += 2;
+                } else if (next_char == '\0') {
+                    *ok = 0;
+                    break;
+                } else {
+                    buffer[buf_idx++] = '\\';
+                    buffer[buf_idx++] = next_char;
+                    curr_char += 2;
+                }
             }
             else
             {
                 buffer[buf_idx++] = currently_reading;
+                curr_char++;
             }
-            curr_char++;
         }
         else if (curr_state == IN_SQUOTE)
         {
             if (currently_reading == '\0')
             {
-                fprintf(stderr, "Error: Unmatched single quote.\n");
+                
                 *ok = 0;
                 break;
             }
@@ -212,7 +227,7 @@ token *lexer(char *line, int *ok)
         {
             if (currently_reading == '\0')
             {
-                fprintf(stderr, "Error: Trailing escape character.\n");
+                
                 *ok = 0;
                 break;
             }

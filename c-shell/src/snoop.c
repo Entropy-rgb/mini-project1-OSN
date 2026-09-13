@@ -125,20 +125,20 @@ int execute_snoop(char **args, int arg_count, char *shell_home, char *prev_dir) 
             
             if (!in_syscall) {
                 in_syscall = 1;
-                
                 clock_gettime(CLOCK_MONOTONIC, &entry_time);
+                if (orig_rax >= 0 && orig_rax < 1024) {
+                    if (stats[orig_rax].count == 0) {
+                        stats[orig_rax].first_occ = ++occ_counter;
+                    }
+                    stats[orig_rax].count++;
+                }
             } else {
                 in_syscall = 0;
                 struct timespec exit_time;
                 clock_gettime(CLOCK_MONOTONIC, &exit_time);
                 double elapsed = (exit_time.tv_sec - entry_time.tv_sec) + 
                                  (exit_time.tv_nsec - entry_time.tv_nsec) / 1e9;
-                
                 if (orig_rax >= 0 && orig_rax < 1024) {
-                    if (stats[orig_rax].count == 0) {
-                        stats[orig_rax].first_occ = ++occ_counter;
-                    }
-                    stats[orig_rax].count++;
                     stats[orig_rax].total_time += elapsed;
                 }
             }

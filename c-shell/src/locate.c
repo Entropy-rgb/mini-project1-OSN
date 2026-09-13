@@ -5,6 +5,16 @@
 #include <unistd.h>
 #include <string.h>
 
+#include <sys/stat.h>
+
+int is_regular_executable(const char *path) {
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && (access(path, X_OK) == 0)) {
+        return 1;
+    }
+    return 0;
+}
+
 int locate(int argc, char *argv[])
 {
     if(argc < 2)
@@ -24,7 +34,7 @@ int locate(int argc, char *argv[])
         
         if (cwd[0] != '\0') {
             snprintf(buffer, sizeof(buffer), "%s/%s", cwd, argv[arg]);
-            if(access(buffer, X_OK) == 0){
+            if(is_regular_executable(buffer)){
                 printf("%s\n", buffer);
                 found = true;
             }
@@ -37,7 +47,7 @@ int locate(int argc, char *argv[])
                 char *dir = strtok(path_env, ":");
                 while(dir != NULL){
                     snprintf(buffer, sizeof(buffer), "%s/%s", dir, argv[arg]);
-                    if(access(buffer, X_OK) == 0){
+                    if(is_regular_executable(buffer)){
                         printf("%s\n", buffer);
                         found = true;
                     }

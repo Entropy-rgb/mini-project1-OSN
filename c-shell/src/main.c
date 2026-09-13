@@ -388,7 +388,12 @@ int execute_single(char **args, int arg_count, char *shell_home, char *prev_dir,
     } else if (strcmp(clean_args[0], "locate") == 0) {
         locate(clean_count, clean_args);
     } else if (strcmp(clean_args[0], "activities") == 0) {
-        print_activities();
+        if (clean_count > 1) {
+            fprintf(stderr, "activities: invalid syntax\n");
+            ret = 1;
+        } else {
+            print_activities();
+        }
     } else if (strcmp(clean_args[0], "resume") == 0) {
         execute_resume(clean_args, clean_count);
     } else if (strcmp(clean_args[0], "ping") == 0) {
@@ -639,6 +644,9 @@ int main()
         line[strcspn(line, "\n")] = '\0';
         int ok = 1;
         token *token_head = lexer(line, &ok);
+        if (ok == 0) {
+            fprintf(stderr, "cshell: invalid syntax\n");
+        }
         if (ok == 0 || token_head == NULL) {
             if (token_head)
                 free_tokens(token_head);

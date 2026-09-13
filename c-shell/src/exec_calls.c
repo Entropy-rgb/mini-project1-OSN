@@ -6,25 +6,40 @@
 #include <signal.h>
 #include <errno.h>
 
+#include <sys/stat.h>
+static int is_regular_executable(const char *path) {
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && (access(path, X_OK) == 0)) {
+        return 1;
+    }
+    return 0;
+}
+
 int check_external_exists(char **args, int arg_count)
 {
     if (arg_count == 0 || args[0] == NULL)
         return 0;
     if (strchr(args[0], '/') != NULL) {
-        if (access(args[0], X_OK) == 0)
+        if (is_regular_executable(args[0]))
             return 1;
         return 0;
     }
     char *cmd = args[0];
     char *lookup = cmd;
-    if (cmd[0] == '%')
+    int skip_cwd = 0;
+    if (cmd[0] == '%') {
         lookup = cmd + 1;
+        skip_cwd = 1;
+    }
     if (lookup[0] == '\0')
         return 0;
-    char local_path[4096];
-    snprintf(local_path, sizeof(local_path), "./%s", lookup);
-    if (access(local_path, X_OK) == 0)
-        return 1;
+    
+    if (!skip_cwd) {
+        char local_path[4096];
+        snprintf(local_path, sizeof(local_path), "./%s", lookup);
+        if (is_regular_executable(local_path))
+            return 1;
+    }
     char *path = getenv("PATH");
     if (path == NULL)
         return 0;
@@ -121,7 +136,7 @@ int execute_external(char **args, int arg_count, pid_t *out_pid, int *stopped)
     }
     char local_path[4096];
     snprintf(local_path, sizeof(local_path), "./%s", args[0]);
-    if (access(local_path, X_OK) == 0) {
+    if (is_regular_executable(local_path)) {
         execv(local_path, args);
         perror("execv");
         _exit(1);

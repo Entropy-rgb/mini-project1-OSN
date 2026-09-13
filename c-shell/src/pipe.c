@@ -13,6 +13,15 @@
 #include "locate.h"
 #include "spy.h"
 #include "snoop.h"
+
+#include <sys/stat.h>
+static int is_regular_executable(const char *path) {
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && (access(path, X_OK) == 0)) {
+        return 1;
+    }
+    return 0;
+}
 #include "exec_calls.h"
 #include "redirection.h"
 #include "pipe.h"
@@ -284,17 +293,20 @@ void execute_command_bg(char **args,
         if (check_external_exists(clean_args, clean_count)) is_ext = 1;
         if (is_ext) {
             char *path = getenv("PATH");
+            int skip_cwd = 0;
             char *cmd = clean_args[0];
-            if (cmd[0] == '%') cmd = cmd + 1;
+            if (cmd[0] == '%') { cmd = cmd + 1; skip_cwd = 1; }
             if (strchr(cmd, '/') != NULL) {
                 execv(cmd, clean_args);
                 _exit(1);
             }
-            char local_path[4096];
-            snprintf(local_path, sizeof(local_path), "./%s", cmd);
-            if (access(local_path, X_OK) == 0) {
-                execv(local_path, clean_args);
-                _exit(1);
+            if (!skip_cwd) {
+                char local_path[4096];
+                snprintf(local_path, sizeof(local_path), "./%s", cmd);
+                if (is_regular_executable(local_path)) {
+                    execv(local_path, clean_args);
+                    _exit(1);
+                }
             }
             if (path != NULL) {
                 char *pc = strdup(path);
@@ -303,7 +315,7 @@ void execute_command_bg(char **args,
                     while (dir != NULL) {
                         char fp[4096];
                         snprintf(fp, sizeof(fp), "%s/%s", dir, cmd);
-                        if (access(fp, X_OK) == 0) {
+                        if (is_regular_executable(fp)) {
                             execv(fp, clean_args);
                             _exit(1);
                         }

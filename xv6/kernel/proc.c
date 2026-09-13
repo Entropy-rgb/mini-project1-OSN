@@ -12,6 +12,8 @@ struct proc proc[NPROC];
 
 #ifdef MLFQ
 int boost_ticks = 0;
+int qcount[4] = {0, 0, 0, 0};
+struct proc* mlfq[4][NPROC];
 #endif
 
 struct proc *initproc;
@@ -33,6 +35,58 @@ struct spinlock wait_lock;
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
+
+#ifdef MLFQ
+void
+enqueue(int q, struct proc *p)
+{
+  if (q < 0 || q > 3)
+    panic("enqueue: invalid queue number");
+  
+  if (qcount[q] >= NPROC)
+    panic("enqueue: queue is full"); 
+  mlfq[q][qcount[q]] = p;
+  qcount[q]++;
+}
+
+
+struct proc*
+dequeue(int q)
+{
+  if (q < 0 || q > 3)
+    panic("dequeue: invalid queue number");
+  if (qcount[q] == 0)
+    return 0;
+
+  struct proc *p = mlfq[q][0];
+
+  for (int i = 0; i < qcount[q] - 1; i++) {
+    mlfq[q][i] = mlfq[q][i + 1];
+  }
+
+  qcount[q]--;
+  return p;
+}
+
+void
+boost_priority(void)
+{
+  struct proc *p;
+  for (int i = 1; i < 4; i++) {
+    while (qcount[i] > 0) {
+      p = dequeue(i);
+      if (p) {
+        acquire(&p->lock);
+        p->queue = 0;
+        p->ticks = 0;
+        enqueue(0, p);
+        release(&p->lock);
+      }
+    }
+  }
+}
+#endif
+
 void
 proc_mapstacks(pagetable_t kpgtbl)
 {
@@ -133,6 +187,7 @@ found:
   p->queue = 0;
   p->ticks = 0;
 #endif
+
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     freeproc(p);
@@ -235,6 +290,10 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+#ifdef MLFQ
+  enqueue(p->queue, p);
+#endif
+
   release(&p->lock);
 }
 
@@ -307,6 +366,9 @@ kfork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+#ifdef MLFQ
+  enqueue(np->queue, np);
+#endif
   release(&np->lock);
 
   return pid;
@@ -445,6 +507,30 @@ scheduler(void)
     intr_on();
     intr_off();
 
+#ifdef MLFQ
+    int found = 0;
+    for (int i = 0; i < 4; i++) {
+      while (qcount[i] > 0) {
+        p = dequeue(i);
+        if (p) {
+          acquire(&p->lock);
+          if (p->state == RUNNABLE) {
+            p->state = RUNNING;
+            c->proc = p;
+            swtch(&c->context, &p->context);
+            c->proc = 0;
+            found = 1;
+          }
+          release(&p->lock);
+          if (found) break;
+        }
+      }
+      if (found) break;
+    }
+    if (found == 0) {
+      asm volatile("wfi");
+    }
+#else
     int found = 0;
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -467,6 +553,7 @@ scheduler(void)
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
+#endif
   }
 }
 
@@ -504,6 +591,12 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
+#ifdef MLFQ
+  if (p->queue < 3)
+    p->queue++;
+  p->ticks = 0;
+  enqueue(p->queue, p);
+#endif
   sched();
   release(&p->lock);
 }
@@ -587,6 +680,9 @@ wakeup(void *chan)
       acquire(&p->lock);
       if (p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+#ifdef MLFQ
+        enqueue(p->queue, p);
+#endif
       }
       release(&p->lock);
     }
@@ -608,6 +704,9 @@ kkill(int pid)
       if (p->state == SLEEPING) {
         // Wake process from sleep().
         p->state = RUNNABLE;
+#ifdef MLFQ
+        enqueue(p->queue, p);
+#endif
       }
       release(&p->lock);
       return 0;
