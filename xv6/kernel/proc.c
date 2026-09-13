@@ -14,6 +14,7 @@ struct proc proc[NPROC];
 int boost_ticks = 0;
 int qcount[4] = {0, 0, 0, 0};
 struct proc* mlfq[4][NPROC];
+struct spinlock mlfq_lock;
 #endif
 
 struct proc *initproc;
@@ -43,20 +44,27 @@ enqueue(int q, struct proc *p)
   if (q < 0 || q > 3)
     panic("enqueue: invalid queue number");
   
-  if (qcount[q] >= NPROC)
+  acquire(&mlfq_lock);
+  if (qcount[q] >= NPROC) {
+    release(&mlfq_lock);
     panic("enqueue: queue is full"); 
+  }
   mlfq[q][qcount[q]] = p;
   qcount[q]++;
+  release(&mlfq_lock);
 }
-
 
 struct proc*
 dequeue(int q)
 {
   if (q < 0 || q > 3)
     panic("dequeue: invalid queue number");
-  if (qcount[q] == 0)
+  
+  acquire(&mlfq_lock);
+  if (qcount[q] == 0) {
+    release(&mlfq_lock);
     return 0;
+  }
 
   struct proc *p = mlfq[q][0];
 
@@ -65,6 +73,7 @@ dequeue(int q)
   }
 
   qcount[q]--;
+  release(&mlfq_lock);
   return p;
 }
 
@@ -72,18 +81,26 @@ void
 boost_priority(void)
 {
   struct proc *p;
-  for (int i = 1; i < 4; i++) {
-    while (qcount[i] > 0) {
-      p = dequeue(i);
-      if (p) {
-        acquire(&p->lock);
-        p->queue = 0;
-        p->ticks = 0;
-        enqueue(0, p);
-        release(&p->lock);
-      }
-    }
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    p->queue = 0;
+    p->ticks = 0;
+    release(&p->lock);
   }
+  
+  acquire(&mlfq_lock);
+  int temp_count = 0;
+  struct proc* temp[NPROC];
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < qcount[i]; j++) {
+      temp[temp_count++] = mlfq[i][j];
+    }
+    qcount[i] = 0;
+  }
+  for (int i = 0; i < temp_count; i++) {
+    mlfq[0][qcount[0]++] = temp[i];
+  }
+  release(&mlfq_lock);
 }
 #endif
 
@@ -109,6 +126,9 @@ procinit(void)
 
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+#ifdef MLFQ
+  initlock(&mlfq_lock, "mlfq_lock");
+#endif
   for (p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
     p->state = UNUSED;
@@ -182,6 +202,12 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->creation_time = ticks;
+  p->ctime = ticks;
+  p->rtime = 0;
+  p->etime = 0;
+  p->iotime = 0;
+  p->first_run_time = 0;
 
 #ifdef MLFQ
   p->queue = 0;
@@ -510,22 +536,53 @@ scheduler(void)
 #ifdef MLFQ
     int found = 0;
     for (int i = 0; i < 4; i++) {
-      while (qcount[i] > 0) {
+      
+      // Using a loop to keep dequeuing until queue is empty or a RUNNABLE process is found
+      while (1) {
         p = dequeue(i);
-        if (p) {
-          acquire(&p->lock);
-          if (p->state == RUNNABLE) {
-            p->state = RUNNING;
-            c->proc = p;
-            swtch(&c->context, &p->context);
-            c->proc = 0;
-            found = 1;
-          }
+        if (!p) break;
+        
+        acquire(&p->lock);
+        if (p->state == RUNNABLE) {
+          p->state = RUNNING;
+          c->proc = p;
+          if (p->first_run_time == 0) p->first_run_time = ticks;
+          swtch(&c->context, &p->context);
+          c->proc = 0;
+          found = 1;
           release(&p->lock);
-          if (found) break;
+          break; // broke out of while
+        }
+        release(&p->lock);
+        // If not runnable, it's just dropped from the queue, continue to next
+      }
+      if (found) break; // broke out of for
+    }
+    if (found == 0) {
+      asm volatile("wfi");
+    }
+#elif defined(FIFO)
+    int found = 0;
+    struct proc *min_p = 0;
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        if (!min_p || p->creation_time < min_p->creation_time) {
+          if (min_p) release(&min_p->lock);
+          min_p = p;
+          continue;
         }
       }
-      if (found) break;
+      release(&p->lock);
+    }
+    if (min_p) {
+      min_p->state = RUNNING;
+      c->proc = min_p;
+      if (min_p->first_run_time == 0) min_p->first_run_time = ticks;
+      swtch(&c->context, &min_p->context);
+      c->proc = 0;
+      found = 1;
+      release(&min_p->lock);
     }
     if (found == 0) {
       asm volatile("wfi");
@@ -540,6 +597,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        if (p->first_run_time == 0) p->first_run_time = ticks;
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -590,14 +648,34 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
-  p->state = RUNNABLE;
 #ifdef MLFQ
-  if (p->queue < 3)
-    p->queue++;
-  p->ticks = 0;
-  enqueue(p->queue, p);
-#endif
+  p->ticks++;
+  int slice = 1;
+  if (p->queue == 1) slice = 4;
+  else if (p->queue == 2) slice = 8;
+  else if (p->queue == 3) slice = 16;
+  
+  int preempt = 0;
+  acquire(&mlfq_lock);
+  for (int i=0; i<p->queue; i++) {
+     if (qcount[i] > 0) preempt = 1;
+  }
+  release(&mlfq_lock);
+
+  if (p->ticks >= slice || preempt) {
+      if (p->ticks >= slice) {
+          if (p->queue < 3) p->queue++;
+          p->ticks = 0;
+      }
+      p->state = RUNNABLE;
+      enqueue(p->queue, p);
+      if (p->pid > 2) printf("MLFQ_PLOT %d %d %d\n", ticks, p->pid, p->queue);
+      sched();
+  }
+#else
+  p->state = RUNNABLE;
   sched();
+#endif
   release(&p->lock);
 }
 
@@ -657,6 +735,9 @@ sleep(void *chan, struct spinlock *lk)
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
+#ifdef MLFQ
+  p->ticks = 0;
+#endif
 
   sched();
 
@@ -792,7 +873,21 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
+#ifdef MLFQ
+    printk("%d %s %s q=%d ticks=%d", p->pid, state, p->name, p->queue, p->ticks);
+#else
     printk("%d %s %s", p->pid, state, p->name);
+#endif
     printk("\n");
+  }
+}
+
+void update_time(void) {
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state == RUNNING) p->rtime++;
+    else if(p->state == SLEEPING) p->iotime++;
+    release(&p->lock);
   }
 }
